@@ -8,6 +8,7 @@ import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/state/server/server_state.dart';
 import 'package:localsend_app/provider/network/server/controller/receive_controller.dart';
 import 'package:localsend_app/provider/network/server/controller/send_controller.dart';
+import 'package:localsend_app/provider/network/server/controller/swarm_controller.dart';
 import 'package:localsend_app/provider/network/server/server_utils.dart';
 import 'package:localsend_app/provider/security_provider.dart';
 import 'package:localsend_app/provider/settings_provider.dart';
@@ -66,6 +67,7 @@ class ServerService extends Notifier<ServerState?> {
 
   late final _receiveController = ReceiveController(_serverUtils);
   late final _sendController = SendController(_serverUtils);
+  late final _swarmController = SwarmController(_serverUtils);
 
   ServerService();
 
@@ -118,6 +120,11 @@ class ServerService extends Notifier<ServerState?> {
       router: router,
       alias: alias,
       fingerprint: fingerprint,
+    );
+    _swarmController.installRoutes(
+      router: router,
+      port: port,
+      https: https,
     );
 
     _logger.info('Starting server...');

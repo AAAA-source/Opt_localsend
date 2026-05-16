@@ -70,7 +70,19 @@ class SettingsService extends PureNotifier<SettingsState> {
     shareViaLinkAutoAccept: _persistence.getShareViaLinkAutoAccept(),
     discoveryTimeout: _persistence.getDiscoveryTimeout(),
     advancedSettings: _persistence.getAdvancedSettingsEnabled(),
+    enableSwarm: _persistence.isSwarmEnabled(),
+    swarmChunkSize: _persistence.getSwarmChunkSize(),
   );
+
+  Future<void> setEnableSwarm(bool enabled) async {
+    await _persistence.setSwarmEnabled(enabled);
+    state = state.copyWith(enableSwarm: enabled);
+  }
+
+  Future<void> setSwarmChunkSize(int size) async {
+    await _persistence.setSwarmChunkSize(size);
+    state = state.copyWith(swarmChunkSize: size);
+  }
 
   Future<void> setAlias(String alias) async {
     await _persistence.setAlias(alias);

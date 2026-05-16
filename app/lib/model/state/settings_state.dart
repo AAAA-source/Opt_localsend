@@ -35,6 +35,8 @@ class SettingsState with SettingsStateMappable {
   final bool shareViaLinkAutoAccept;
   final int discoveryTimeout;
   final bool advancedSettings;
+  final bool enableSwarm; // experimental P2P swarm transfer (HopSwift)
+  final int swarmChunkSize; // bytes per chunk in swarm mode
 
   const SettingsState({
     required this.showToken,
@@ -63,5 +65,7 @@ class SettingsState with SettingsStateMappable {
     required this.shareViaLinkAutoAccept,
     required this.discoveryTimeout,
     required this.advancedSettings,
+    required this.enableSwarm,
+    required this.swarmChunkSize,
   });
 }

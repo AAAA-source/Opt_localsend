@@ -9,6 +9,15 @@
 /// 2.1       | 1.18.0
 const protocolVersion = '2.1';
 
+/// The optional swarm (HopSwift, v3) protocol version.
+/// Used when both sides agree to do chunk-based multi-receiver transfers.
+/// Negotiated via probing `/v3/prepare-swarm`; falls back to v2 unicast on 404.
+const swarmProtocolVersion = '3.0';
+
+/// Default chunk size for swarm transfers (4 MiB).
+/// Sender splits each file into fixed-size chunks (last chunk may be smaller).
+const defaultChunkSize = 4 * 1024 * 1024;
+
 /// Assumed protocol version of peers for first handshake.
 /// Generally this should be slightly lower than the current protocol version.
 const peerProtocolVersion = '1.0';

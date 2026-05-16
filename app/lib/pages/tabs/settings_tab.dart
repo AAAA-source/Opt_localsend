@@ -544,6 +544,20 @@ class SettingsTab extends StatelessWidget {
                       const SizedBox(width: 10),
                     ],
                   ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      LabeledCheckbox(
+                        label: 'Swarm mode (experimental)',
+                        value: ref.watch(settingsProvider.select((s) => s.enableSwarm)),
+                        labelFirst: true,
+                        onChanged: (b) async {
+                          await ref.notifier(settingsProvider).setEnableSwarm(b == true);
+                        },
+                      ),
+                      const SizedBox(width: 10),
+                    ],
+                  ),
                   const SizedBox(height: 20),
                   const LocalSendLogo(withText: true),
                   const SizedBox(height: 5),

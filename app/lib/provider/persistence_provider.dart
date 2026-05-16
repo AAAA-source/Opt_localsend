@@ -90,6 +90,8 @@ const _deviceType = 'ls_device_type';
 const _deviceModel = 'ls_device_model';
 const _shareViaLinkAutoAccept = 'ls_share_via_link_auto_accept';
 const _advancedSettingsKey = 'ls_advanced_settings';
+const _enableSwarmKey = 'ls_enable_swarm';
+const _swarmChunkSizeKey = 'ls_swarm_chunk_size';
 
 final persistenceProvider = Provider<PersistenceService>((ref) {
   throw Exception('persistenceProvider not initialized');
@@ -409,6 +411,22 @@ class PersistenceService {
 
   Future<void> setAdvancedSettingsEnabled(bool isEnabled) async {
     await _prefs.setBool(_advancedSettingsKey, isEnabled);
+  }
+
+  bool isSwarmEnabled() {
+    return _prefs.getBool(_enableSwarmKey) ?? false;
+  }
+
+  Future<void> setSwarmEnabled(bool enabled) async {
+    await _prefs.setBool(_enableSwarmKey, enabled);
+  }
+
+  int getSwarmChunkSize() {
+    return _prefs.getInt(_swarmChunkSizeKey) ?? (4 * 1024 * 1024);
+  }
+
+  Future<void> setSwarmChunkSize(int size) async {
+    await _prefs.setInt(_swarmChunkSizeKey, size);
   }
 
   bool isQuickSave() {

@@ -13,6 +13,7 @@ import 'package:localsend_app/provider/local_ip_provider.dart';
 import 'package:localsend_app/provider/network/nearby_devices_provider.dart';
 import 'package:localsend_app/provider/network/scan_facade.dart';
 import 'package:localsend_app/provider/network/send_provider.dart';
+import 'package:localsend_app/provider/network/swarm/swarm_send_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/util/favorites.dart';
@@ -26,6 +27,7 @@ import 'package:routerino/routerino.dart';
 
 class SendTabVm {
   final SendMode sendMode;
+  final bool swarmEnabled;
   final List<CrossFile> selectedFiles;
   final List<String> localIps;
   final Iterable<Device> nearbyDevices;
@@ -36,9 +38,11 @@ class SendTabVm {
   final Future<void> Function(BuildContext context, Device device) onToggleFavorite;
   final Future<void> Function(BuildContext context, Device device) onTapDevice;
   final Future<void> Function(BuildContext context, Device device) onTapDeviceMultiSend;
+  final Future<void> Function(BuildContext context) onTapSwarmAll;
 
   const SendTabVm({
     required this.sendMode,
+    required this.swarmEnabled,
     required this.selectedFiles,
     required this.localIps,
     required this.nearbyDevices,
@@ -49,11 +53,13 @@ class SendTabVm {
     required this.onToggleFavorite,
     required this.onTapDevice,
     required this.onTapDeviceMultiSend,
+    required this.onTapSwarmAll,
   });
 }
 
 final sendTabVmProvider = ViewProvider((ref) {
   final sendMode = ref.watch(settingsProvider.select((s) => s.sendMode));
+  final swarmEnabled = ref.watch(settingsProvider.select((s) => s.enableSwarm));
   final selectedFiles = ref.watch(selectedSendingFilesProvider);
   final localIps = ref.watch(localIpProvider).localIps;
   final nearbyDevices = ref.watch(nearbyDevicesProvider).allDevices.values;
@@ -61,6 +67,7 @@ final sendTabVmProvider = ViewProvider((ref) {
 
   return SendTabVm(
     sendMode: sendMode,
+    swarmEnabled: swarmEnabled,
     selectedFiles: selectedFiles,
     localIps: localIps,
     nearbyDevices: nearbyDevices,
@@ -190,6 +197,20 @@ final sendTabVmProvider = ViewProvider((ref) {
             files: files,
             background: true,
           );
+    },
+    onTapSwarmAll: (context) async {
+      final files = ref.read(selectedSendingFilesProvider);
+      if (files.isEmpty) {
+        await context.pushBottomSheet(() => const NoFilesDialog());
+        return;
+      }
+      final targets = ref.read(nearbyDevicesProvider).allDevices.values.toList();
+      if (targets.isEmpty) {
+        return;
+      }
+      // Start the swarm session — backend handles UI updates via swarmSendProvider state.
+      // ignore: discarded_futures, unawaited_futures
+      ref.notifier(swarmSendProvider).startSwarmSession(targets: targets, files: files);
     },
   );
 });
