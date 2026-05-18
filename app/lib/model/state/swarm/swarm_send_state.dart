@@ -21,6 +21,13 @@ class SwarmSendState {
   final String? errorMessage;
   // Preparation progress (SHA256 pre-hashing). 0..1.
   final double prepareProgress;
+  // Timing instrumentation (epoch millis) — for the proposal's last-receiver completion metric.
+  final int? prepareStartTime;
+  final int? prepareEndTime;
+  final int? firstChunkSentAt;
+  final int? lastChunkSentAt;
+  // fingerprint -> epoch millis when that peer's bitmap first reported all chunks for all files.
+  final Map<String, int> peerCompleteTime;
 
   const SwarmSendState({
     required this.sessionId,
@@ -34,6 +41,11 @@ class SwarmSendState {
     required this.endTime,
     required this.errorMessage,
     required this.prepareProgress,
+    required this.prepareStartTime,
+    required this.prepareEndTime,
+    required this.firstChunkSentAt,
+    required this.lastChunkSentAt,
+    required this.peerCompleteTime,
   });
 
   SwarmSendState copyWith({
@@ -44,6 +56,11 @@ class SwarmSendState {
     int? endTime,
     String? errorMessage,
     double? prepareProgress,
+    int? prepareStartTime,
+    int? prepareEndTime,
+    int? firstChunkSentAt,
+    int? lastChunkSentAt,
+    Map<String, int>? peerCompleteTime,
   }) {
     return SwarmSendState(
       sessionId: sessionId,
@@ -57,6 +74,20 @@ class SwarmSendState {
       endTime: endTime ?? this.endTime,
       errorMessage: errorMessage ?? this.errorMessage,
       prepareProgress: prepareProgress ?? this.prepareProgress,
+      prepareStartTime: prepareStartTime ?? this.prepareStartTime,
+      prepareEndTime: prepareEndTime ?? this.prepareEndTime,
+      firstChunkSentAt: firstChunkSentAt ?? this.firstChunkSentAt,
+      lastChunkSentAt: lastChunkSentAt ?? this.lastChunkSentAt,
+      peerCompleteTime: peerCompleteTime ?? this.peerCompleteTime,
     );
   }
+
+  /// Total bytes across all files (cached as a getter; cheap because files map is small).
+  int get totalBytes => files.values.fold<int>(0, (a, f) => a + f.size);
+
+  /// Total chunks across all files (0 before plans are filled).
+  int get totalChunks => plans.values.fold<int>(0, (a, p) => a + p.totalChunks);
+
+  /// Direct uploads completed so far across all files.
+  int get sentChunks => sentToPrimary.values.fold<int>(0, (a, s) => a + s.length);
 }

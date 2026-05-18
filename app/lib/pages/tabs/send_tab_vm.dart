@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:collection/collection.dart';
 import 'package:common/model/device.dart';
 import 'package:common/model/session_status.dart';
@@ -5,14 +7,17 @@ import 'package:flutter/material.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/persistence/favorite_device.dart';
 import 'package:localsend_app/model/send_mode.dart';
+import 'package:localsend_app/pages/benchmark_page.dart';
 import 'package:localsend_app/pages/progress_page.dart';
 import 'package:localsend_app/pages/send_page.dart';
+import 'package:localsend_app/pages/swarm_progress_page.dart';
 import 'package:localsend_app/pages/web_send_page.dart';
 import 'package:localsend_app/provider/favorites_provider.dart';
 import 'package:localsend_app/provider/local_ip_provider.dart';
 import 'package:localsend_app/provider/network/nearby_devices_provider.dart';
 import 'package:localsend_app/provider/network/scan_facade.dart';
 import 'package:localsend_app/provider/network/send_provider.dart';
+import 'package:localsend_app/provider/network/swarm/swarm_benchmark.dart';
 import 'package:localsend_app/provider/network/swarm/swarm_send_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/provider/settings_provider.dart';
@@ -39,6 +44,7 @@ class SendTabVm {
   final Future<void> Function(BuildContext context, Device device) onTapDevice;
   final Future<void> Function(BuildContext context, Device device) onTapDeviceMultiSend;
   final Future<void> Function(BuildContext context) onTapSwarmAll;
+  final Future<void> Function(BuildContext context) onTapBenchmark;
 
   const SendTabVm({
     required this.sendMode,
@@ -54,6 +60,7 @@ class SendTabVm {
     required this.onTapDevice,
     required this.onTapDeviceMultiSend,
     required this.onTapSwarmAll,
+    required this.onTapBenchmark,
   });
 }
 
@@ -208,9 +215,27 @@ final sendTabVmProvider = ViewProvider((ref) {
       if (targets.isEmpty) {
         return;
       }
-      // Start the swarm session — backend handles UI updates via swarmSendProvider state.
+      // The notifier sets the new session in state synchronously (before its first
+      // await), so we can identify the new id by diffing snapshots taken before
+      // and after the call kicks off.
+      final before = ref.read(swarmSendProvider).keys.toSet();
       // ignore: discarded_futures, unawaited_futures
-      ref.notifier(swarmSendProvider).startSwarmSession(targets: targets, files: files);
+      unawaited(ref.notifier(swarmSendProvider).startSwarmSession(targets: targets, files: files));
+      final after = ref.read(swarmSendProvider).keys.toSet().difference(before);
+      final sid = after.isEmpty ? null : after.first;
+      if (sid != null && context.mounted) {
+        await context.push(() => SwarmProgressPage(senderSessionId: sid));
+      }
+    },
+    onTapBenchmark: (context) async {
+      final files = ref.read(selectedSendingFilesProvider);
+      if (files.isEmpty) {
+        await context.pushBottomSheet(() => const NoFilesDialog());
+        return;
+      }
+      final targets = ref.read(nearbyDevicesProvider).allDevices.values.toList();
+      if (targets.length < 2) return;
+      await context.push(() => const BenchmarkPage());
     },
   );
 });

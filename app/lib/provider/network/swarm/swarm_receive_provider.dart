@@ -108,8 +108,13 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     rf.bitmap.bits[byte] |= (1 << (chunkIndex & 7));
     rf.chunksFromSource[source] = (rf.chunksFromSource[source] ?? 0) + 1;
     (_chunkSource[fileId] ??= {})[chunkIndex] = source;
-    // Notify listeners with a fresh state snapshot
-    state = s.copyWith(files: {...s.files});
+    // Notify listeners with a fresh state snapshot + timing.
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    state = s.copyWith(
+      files: {...s.files},
+      firstChunkReceivedAt: s.firstChunkReceivedAt ?? nowMs,
+      lastChunkReceivedAt: nowMs,
+    );
     return true;
   }
 
@@ -297,12 +302,38 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
       } catch (_) {}
     }
     final anyError = files.values.any((f) => f.errorMessage != null);
+    final endMs = DateTime.now().millisecondsSinceEpoch;
     state = s.copyWith(
       status: anyError ? SessionStatus.finishedWithErrors : SessionStatus.finished,
-      endTime: DateTime.now().millisecondsSinceEpoch,
+      endTime: endMs,
       files: files,
     );
+    _emitReceiverBenchmarkLog(state!);
     _logger.info('Swarm receive session ${s.sessionId} ${anyError ? 'finishedWithErrors' : 'finished'}');
+  }
+
+  /// Schema: RECVBENCH,sessionId,totalBytes,totalChunks,startToFirstMs,startToLastMs,sourceBreakdown(label=count;..)
+  void _emitReceiverBenchmarkLog(SwarmReceiveState s) {
+    final startMs = s.startTime;
+    final totalBytes = s.totalBytes;
+    final totalChunks = s.files.values.fold<int>(0, (a, f) => a + f.plan.totalChunks);
+    final firstMs = (startMs != null && s.firstChunkReceivedAt != null)
+        ? s.firstChunkReceivedAt! - startMs
+        : -1;
+    final lastMs = (startMs != null && s.lastChunkReceivedAt != null)
+        ? s.lastChunkReceivedAt! - startMs
+        : -1;
+    final breakdown = <String, int>{};
+    for (final rf in s.files.values) {
+      rf.chunksFromSource.forEach((k, v) {
+        final label = k == 'sender' ? 'sender' : (k.length < 8 ? k : k.substring(0, 8));
+        breakdown[label] = (breakdown[label] ?? 0) + v;
+      });
+    }
+    final breakdownStr = breakdown.entries.map((e) => '${e.key}=${e.value}').join(';');
+    _logger.info(
+      'RECVBENCH,${s.sessionId},$totalBytes,$totalChunks,$firstMs,$lastMs,$breakdownStr',
+    );
   }
 
   /// Close current session (user or sender cancel).

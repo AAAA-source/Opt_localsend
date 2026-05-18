@@ -70,6 +70,9 @@ class SwarmReceiveState {
   // Most-recent bitmap announced by each peer (excluding self). fingerprint -> fileId -> bitmap
   final Map<String, Map<String, BitmapDto>> peerBitmaps;
   final String? errorMessage;
+  // Timing instrumentation (epoch millis).
+  final int? firstChunkReceivedAt;
+  final int? lastChunkReceivedAt;
 
   const SwarmReceiveState({
     required this.sessionId,
@@ -87,6 +90,8 @@ class SwarmReceiveState {
     required this.responseHandler,
     required this.peerBitmaps,
     required this.errorMessage,
+    this.firstChunkReceivedAt,
+    this.lastChunkReceivedAt,
   });
 
   SwarmReceiveState copyWith({
@@ -98,6 +103,8 @@ class SwarmReceiveState {
     bool clearResponseHandler = false,
     Map<String, Map<String, BitmapDto>>? peerBitmaps,
     String? errorMessage,
+    int? firstChunkReceivedAt,
+    int? lastChunkReceivedAt,
   }) {
     return SwarmReceiveState(
       sessionId: sessionId,
@@ -115,6 +122,22 @@ class SwarmReceiveState {
       responseHandler: clearResponseHandler ? null : (responseHandler ?? this.responseHandler),
       peerBitmaps: peerBitmaps ?? this.peerBitmaps,
       errorMessage: errorMessage ?? this.errorMessage,
+      firstChunkReceivedAt: firstChunkReceivedAt ?? this.firstChunkReceivedAt,
+      lastChunkReceivedAt: lastChunkReceivedAt ?? this.lastChunkReceivedAt,
     );
+  }
+
+  /// Total bytes across all files in this session.
+  int get totalBytes => files.values.fold<int>(0, (a, f) => a + f.file.size);
+
+  /// Bytes received so far (counted by bitmap, using per-chunk length).
+  int get receivedBytes {
+    var sum = 0;
+    for (final rf in files.values) {
+      for (var k = 0; k < rf.plan.totalChunks; k++) {
+        if (rf.bitmap.has(k)) sum += rf.plan.chunkLength(k);
+      }
+    }
+    return sum;
   }
 }

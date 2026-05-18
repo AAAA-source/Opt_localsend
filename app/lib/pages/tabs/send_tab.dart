@@ -210,6 +210,15 @@ class SendTab extends StatelessWidget {
                       label: Text('Swarm send to all (${vm.nearbyDevices.length} devices)'),
                     ),
                   ),
+                if (vm.swarmEnabled && vm.nearbyDevices.length >= 2 && vm.selectedFiles.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: _horizontalPadding, vertical: 5),
+                    child: OutlinedButton.icon(
+                      onPressed: () async => await vm.onTapBenchmark(context),
+                      icon: const Icon(Icons.speed),
+                      label: const Text('Run A/B benchmark (v2 then v3)'),
+                    ),
+                  ),
                 if (vm.nearbyDevices.isEmpty)
                   const Padding(
                     padding: EdgeInsets.only(bottom: 10, left: _horizontalPadding, right: _horizontalPadding),

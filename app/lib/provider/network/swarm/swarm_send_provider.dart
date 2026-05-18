@@ -65,11 +65,14 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
   @override
   Map<String, SwarmSendState> init() => {};
 
-  Future<void> startSwarmSession({
+  /// Starts a swarm session and returns its id. The id is registered into
+  /// [state] synchronously before any awaits, so callers can read it
+  /// immediately after this call resolves on the next microtask.
+  Future<String?> startSwarmSession({
     required List<Device> targets,
     required List<CrossFile> files,
   }) async {
-    if (targets.isEmpty || files.isEmpty) return;
+    if (targets.isEmpty || files.isEmpty) return null;
     final sessionId = _uuid.v4();
     _logger.info('Starting swarm session $sessionId to ${targets.length} targets, ${files.length} files');
 
@@ -103,9 +106,10 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     }
     if (fileDtos.isEmpty) {
       _logger.warning('Swarm session aborted: no eligible files');
-      return;
+      return null;
     }
 
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
     final initialState = SwarmSendState(
       sessionId: sessionId,
       status: SessionStatus.waiting,
@@ -114,10 +118,15 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       plans: const {},
       tokens: const {},
       sentToPrimary: {for (final id in fileDtos.keys) id: <int>{}},
-      startTime: DateTime.now().millisecondsSinceEpoch,
+      startTime: nowMs,
       endTime: null,
       errorMessage: null,
       prepareProgress: 0,
+      prepareStartTime: nowMs,
+      prepareEndTime: null,
+      firstChunkSentAt: null,
+      lastChunkSentAt: null,
+      peerCompleteTime: const {},
     );
     state = {...state, sessionId: initialState};
 
@@ -149,9 +158,13 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
             status: SessionStatus.finishedWithErrors,
             errorMessage: 'Hashing failed: $e',
           ));
-      return;
+      return sessionId;
     }
-    state = _patch(sessionId, (s) => s.copyWith(plans: plans, prepareProgress: 1));
+    state = _patch(sessionId, (s) => s.copyWith(
+          plans: plans,
+          prepareProgress: 1,
+          prepareEndTime: DateTime.now().millisecondsSinceEpoch,
+        ));
 
     // Phase B: POST prepare-swarm to every target in parallel
     final security = ref.read(securityProvider);
@@ -219,7 +232,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
             status: SessionStatus.declined,
             endTime: DateTime.now().millisecondsSinceEpoch,
           ));
-      return;
+      return sessionId;
     }
     state = _patch(sessionId, (s) => s.copyWith(
           status: SessionStatus.sending,
@@ -240,11 +253,47 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       stop: stop,
     );
 
-    state = _patch(sessionId, (s) => s.copyWith(
-          status: SessionStatus.finished,
-          endTime: DateTime.now().millisecondsSinceEpoch,
-        ));
+    final endMs = DateTime.now().millisecondsSinceEpoch;
+    // Final pass: any target without a recorded completion gets stamped now.
+    _recordPeerCompletions(sessionId: sessionId, acceptedTargets: acceptedTargets);
+    state = _patch(sessionId, (s) {
+      final pct = {...s.peerCompleteTime};
+      for (final t in acceptedTargets) {
+        pct.putIfAbsent(t.fingerprint, () => endMs);
+      }
+      return s.copyWith(
+        status: SessionStatus.finished,
+        endTime: endMs,
+        peerCompleteTime: pct,
+      );
+    });
+    _emitSenderBenchmarkLog(sessionId);
     _logger.info('Swarm session $sessionId completed');
+    return sessionId;
+  }
+
+  /// Emit a single-line CSV-friendly summary at the `SENDBENCH` tag so
+  /// `flutter logs | grep SENDBENCH` is enough to grab the proposal's metric.
+  /// Schema: SENDBENCH,sessionId,mode,M,totalBytes,totalChunks,prepareMs,sendMs,lastReceiverMs,peerTimings(fp@ms;..)
+  void _emitSenderBenchmarkLog(String sessionId) {
+    final ss = state[sessionId];
+    if (ss == null) return;
+    final prepareMs = (ss.prepareStartTime != null && ss.prepareEndTime != null)
+        ? ss.prepareEndTime! - ss.prepareStartTime!
+        : -1;
+    final sendMs = (ss.firstChunkSentAt != null && ss.lastChunkSentAt != null)
+        ? ss.lastChunkSentAt! - ss.firstChunkSentAt!
+        : -1;
+    final lastReceiverMs = ss.peerCompleteTime.values.isEmpty
+        ? -1
+        : ss.peerCompleteTime.values.reduce((a, b) => a > b ? a : b) - ss.startTime;
+    final peerTimings = ss.peerCompleteTime.entries
+        .map((e) => '${e.key.substring(0, e.key.length < 8 ? e.key.length : 8)}@${e.value - ss.startTime}')
+        .join(';');
+    _logger.info(
+      'SENDBENCH,$sessionId,swarm,${ss.targets.length},${ss.totalBytes},${ss.totalChunks},'
+      '$prepareMs,$sendMs,$lastReceiverMs,$peerTimings',
+    );
   }
 
   Future<Map<String, String>?> _prepareOnTarget({
@@ -398,7 +447,12 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     state = _patch(sessionId, (s) {
       final next = {...s.sentToPrimary};
       next[chunkRef.fileId] = {...(next[chunkRef.fileId] ?? const <int>{}), chunkRef.chunkIndex};
-      return s.copyWith(sentToPrimary: next);
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      return s.copyWith(
+        sentToPrimary: next,
+        firstChunkSentAt: s.firstChunkSentAt ?? nowMs,
+        lastChunkSentAt: nowMs,
+      );
     });
   }
 
@@ -425,6 +479,8 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       } catch (e, st) {
         _logger.warning('Fallback tick error', e, st);
       }
+      // Record per-peer completion timestamps as bitmaps fill up.
+      _recordPeerCompletions(sessionId: sessionId, acceptedTargets: acceptedTargets);
       if (_allPeersComplete(sessionId: sessionId, acceptedTargets: acceptedTargets)) {
         if (!stop.isCompleted) stop.complete();
         return;
@@ -433,6 +489,36 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
         Future.delayed(const Duration(seconds: 2)),
         stop.future,
       ]);
+    }
+  }
+
+  /// For each accepted target whose latest reported bitmaps cover all chunks
+  /// of all files, stamp the completion time once (first observation only).
+  void _recordPeerCompletions({
+    required String sessionId,
+    required List<Device> acceptedTargets,
+  }) {
+    final ss = state[sessionId];
+    if (ss == null) return;
+    final byPeer = _peerBitmaps[sessionId] ?? const {};
+    final next = {...ss.peerCompleteTime};
+    var changed = false;
+    for (final t in acceptedTargets) {
+      if (next.containsKey(t.fingerprint)) continue;
+      final perFile = byPeer[t.fingerprint];
+      if (perFile == null) continue;
+      var fullCount = 0;
+      for (final plan in ss.plans.values) {
+        final bm = perFile[plan.fileId];
+        if (bm != null && bm.receivedCount >= plan.totalChunks) fullCount++;
+      }
+      if (fullCount == ss.plans.length && ss.plans.isNotEmpty) {
+        next[t.fingerprint] = DateTime.now().millisecondsSinceEpoch;
+        changed = true;
+      }
+    }
+    if (changed) {
+      state = _patch(sessionId, (s) => s.copyWith(peerCompleteTime: next));
     }
   }
 

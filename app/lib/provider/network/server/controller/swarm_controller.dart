@@ -12,8 +12,8 @@ import 'package:common/model/dto/swarm/prepare_swarm_request_dto.dart';
 import 'package:common/model/dto/swarm/prepare_swarm_response_dto.dart';
 import 'package:common/model/session_status.dart';
 import 'package:localsend_app/model/state/swarm/swarm_receive_state.dart';
-import 'package:localsend_app/pages/progress_page.dart';
 import 'package:localsend_app/pages/receive_page.dart';
+import 'package:localsend_app/pages/swarm_progress_page.dart';
 import 'package:localsend_app/provider/favorites_provider.dart';
 import 'package:localsend_app/provider/network/server/server_utils.dart';
 import 'package:localsend_app/provider/network/swarm/swarm_receive_provider.dart';
@@ -196,11 +196,7 @@ class SwarmController {
     if (quickSave) {
       // ignore: use_build_context_synchronously, unawaited_futures, discarded_futures
       unawaited(Routerino.context.pushImmediately(
-        () => ProgressPage(
-          showAppBar: false,
-          closeSessionOnClose: true,
-          sessionId: dto.sessionId,
-        ),
+        () => const SwarmProgressPage(senderSessionId: null, showAppBar: false),
       ));
     }
 
@@ -228,11 +224,7 @@ class SwarmController {
           // ignore: use_build_context_synchronously, unawaited_futures
           await Routerino.context.pushAndRemoveUntilImmediately(
             removeUntil: ReceivePage,
-            builder: () => ProgressPage(
-              showAppBar: false,
-              closeSessionOnClose: true,
-              sessionId: session.sessionId,
-            ),
+            builder: () => const SwarmProgressPage(senderSessionId: null, showAppBar: false),
           );
         },
         onDecline: () {
