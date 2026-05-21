@@ -14,8 +14,5 @@ class IsolateTask<T> {
   /// The payload of the request.
   final T data;
 
-  IsolateTask({
-    required this.id,
-    required this.data,
-  });
+  IsolateTask({required this.id, required this.data});
 }

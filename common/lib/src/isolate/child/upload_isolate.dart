@@ -17,9 +17,7 @@ sealed class BaseHttpUploadTask {}
 class HttpUploadSetContentStreamResolverTask implements BaseHttpUploadTask {
   final UriContentStreamResolver resolver;
 
-  HttpUploadSetContentStreamResolverTask({
-    required this.resolver,
-  });
+  HttpUploadSetContentStreamResolverTask({required this.resolver});
 }
 
 class HttpUploadTask implements BaseHttpUploadTask {
@@ -81,9 +79,7 @@ Future<void> setupHttpUploadIsolate(
       switch (task.data) {
         case HttpUploadSetContentStreamResolverTask task:
           final rootIsolateToken = ref.read(syncProvider).rootIsolateToken;
-          task.resolver.init(
-            rootIsolateToken: rootIsolateToken,
-          );
+          task.resolver.init(rootIsolateToken: rootIsolateToken);
           _uriContentStreamResolver = task.resolver;
           return;
         case HttpUploadTask task:
@@ -97,19 +93,27 @@ Future<void> setupHttpUploadIsolate(
       }
 
       final Stream<List<int>>? fileStream = uploadTask.filePath != null
-          ? _uriContentStreamResolver != null && uploadTask.filePath!.startsWith('content://')
-              ? _uriContentStreamResolver!.resolve(Uri.parse(uploadTask.filePath!))
-              : File(uploadTask.filePath!).openRead()
+          ? _uriContentStreamResolver != null &&
+                    uploadTask.filePath!.startsWith('content://')
+                ? _uriContentStreamResolver!.resolve(
+                    Uri.parse(uploadTask.filePath!),
+                  )
+                : File(uploadTask.filePath!).openRead()
           : null;
 
-      final (streamController, subscription) = fileStream?.digested() ?? (null, null);
+      final (streamController, subscription) =
+          fileStream?.digested() ?? (null, null);
 
       try {
         final cancelToken = CustomCancelToken();
         ref.read(_cancelTokenProvider).putIfAbsent(task.id, () => cancelToken);
 
-        await ref.read(httpUploadProvider).upload(
-              stream: streamController?.stream ?? Stream.fromIterable([uploadTask.fileBytes!]),
+        await ref
+            .read(httpUploadProvider)
+            .upload(
+              stream:
+                  streamController?.stream ??
+                  Stream.fromIterable([uploadTask.fileBytes!]),
               contentLength: uploadTask.fileSize,
               contentType: uploadTask.mime,
               target: uploadTask.device,
@@ -117,22 +121,18 @@ Future<void> setupHttpUploadIsolate(
               fileId: uploadTask.fileId,
               token: uploadTask.remoteFileToken,
               onSendProgress: (progress) {
-                sendToMain(IsolateTaskStreamResult.event(
-                  id: task.id,
-                  data: progress,
-                ));
+                sendToMain(
+                  IsolateTaskStreamResult.event(id: task.id, data: progress),
+                );
               },
               cancelToken: cancelToken,
             );
 
-        sendToMain(IsolateTaskStreamResult.done(
-          id: task.id,
-        ));
+        sendToMain(IsolateTaskStreamResult.done(id: task.id));
       } catch (e) {
-        sendToMain(IsolateTaskStreamResult.error(
-          id: task.id,
-          error: e.toString(),
-        ));
+        sendToMain(
+          IsolateTaskStreamResult.error(id: task.id, error: e.toString()),
+        );
       } finally {
         // Close the stream if it is still open
         // ignore: unawaited_futures

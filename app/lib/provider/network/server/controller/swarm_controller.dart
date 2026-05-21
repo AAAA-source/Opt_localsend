@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:collection/collection.dart';
 import 'package:common/api_route_builder.dart';
 import 'package:common/model/device.dart';
+import 'package:common/model/dto/info_register_dto.dart';
 import 'package:common/model/dto/swarm/announce_dto.dart';
 import 'package:common/model/dto/swarm/bitmap_dto.dart';
 import 'package:common/model/dto/swarm/prepare_swarm_request_dto.dart';
@@ -86,11 +87,7 @@ class SwarmController {
     final destinationDir = settings.destination ?? await getDefaultDestinationDirectory();
     final cacheDir = await getCacheDirectory();
     final senderDevice = dto.info.toDevice(req.ip, port, https, null);
-    final senderAlias = server.ref
-            .read(favoritesProvider)
-            .firstWhereOrNull((e) => e.fingerprint == dto.info.fingerprint)
-            ?.alias ??
-        dto.info.alias;
+    final senderAlias = server.ref.read(favoritesProvider).firstWhereOrNull((e) => e.fingerprint == dto.info.fingerprint)?.alias ?? dto.info.alias;
 
     final streamController = StreamController<Map<String, String>?>();
     // Provisional receiving-file records (no RAF yet — opened after acceptance).
@@ -113,23 +110,25 @@ class SwarmController {
         ),
     };
 
-    notifier.setSession(SwarmReceiveState(
-      sessionId: dto.sessionId,
-      status: SessionStatus.waiting,
-      sender: senderDevice,
-      senderAlias: senderAlias,
-      peers: dto.peers,
-      myIndex: dto.myIndex,
-      files: provisionalFiles,
-      startTime: null,
-      endTime: null,
-      destinationDirectory: destinationDir,
-      cacheDirectory: cacheDir,
-      createdDirectories: <String>{},
-      responseHandler: streamController,
-      peerBitmaps: const {},
-      errorMessage: null,
-    ));
+    notifier.setSession(
+      SwarmReceiveState(
+        sessionId: dto.sessionId,
+        status: SessionStatus.waiting,
+        sender: senderDevice,
+        senderAlias: senderAlias,
+        peers: dto.peers,
+        myIndex: dto.myIndex,
+        files: provisionalFiles,
+        startTime: null,
+        endTime: null,
+        destinationDirectory: destinationDir,
+        cacheDirectory: cacheDir,
+        createdDirectories: <String>{},
+        responseHandler: streamController,
+        peerBitmaps: const {},
+        errorMessage: null,
+      ),
+    );
 
     // Auto-accept paths (quick save / favorites) — match v2 behavior.
     bool quickSave = settings.quickSave;
@@ -183,25 +182,31 @@ class SwarmController {
         _logger.severe('Failed to open destination for $desiredName', e, st);
       }
     }
-    notifier.mutate((s) => s.copyWith(
-          status: SessionStatus.sending,
-          files: updatedFiles,
-          startTime: DateTime.now().millisecondsSinceEpoch,
-          clearResponseHandler: true,
-        ));
+    notifier.mutate(
+      (s) => s.copyWith(
+        status: SessionStatus.sending,
+        files: updatedFiles,
+        startTime: DateTime.now().millisecondsSinceEpoch,
+        clearResponseHandler: true,
+      ),
+    );
     // Kick off the pull worker (peer chunk swap + completion watcher).
     // ignore: unawaited_futures, discarded_futures
     unawaited(notifier.startPullWorker());
 
     if (quickSave) {
       // ignore: use_build_context_synchronously, unawaited_futures, discarded_futures
-      unawaited(Routerino.context.pushImmediately(
-        () => const SwarmProgressPage(senderSessionId: null, showAppBar: false),
-      ));
+      unawaited(
+        Routerino.context.pushImmediately(
+          () => const SwarmProgressPage(senderSessionId: null, showAppBar: false),
+        ),
+      );
     }
 
-    await req.respondJson(200,
-        body: PrepareSwarmResponseDto(sessionId: dto.sessionId, tokens: tokens).toJson());
+    await req.respondJson(
+      200,
+      body: PrepareSwarmResponseDto(sessionId: dto.sessionId, tokens: tokens).toJson(),
+    );
   }
 
   void _pushReceivePage() {

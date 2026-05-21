@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:common/model/dto/swarm/chunk_plan_dto.dart';
+import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
 
 /// Reads [filePath] from disk and produces a [ChunkPlanDto]:
@@ -51,7 +53,9 @@ Future<ChunkPlanDto> planChunks({
         final toRead = leftInChunk < buf.length ? leftInChunk : buf.length;
         final n = await raf.readInto(buf, 0, toRead);
         if (n <= 0) {
-          throw StateError('Unexpected EOF at chunk $i ($leftInChunk bytes missing)');
+          throw StateError(
+            'Unexpected EOF at chunk $i ($leftInChunk bytes missing)',
+          );
         }
         final view = Uint8List.sublistView(buf, 0, n);
         chunkSink.add(view);

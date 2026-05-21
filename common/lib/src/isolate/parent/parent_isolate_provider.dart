@@ -22,9 +22,20 @@ const _uploadIsolateCount = 2;
 @MappableClass()
 class ParentIsolateState with ParentIsolateStateMappable {
   final SyncState syncState;
-  final IsolateConnector<IsolateTaskStreamResult<Device>, SendToIsolateData<IsolateTask<HttpScanTask>>>? httpScanDiscovery;
-  final IsolateConnector<Device, SendToIsolateData<MulticastTask>>? multicastDiscovery;
-  final List<IsolateConnector<IsolateTaskStreamResult<double>, SendToIsolateData<IsolateTask<BaseHttpUploadTask>>>> httpUpload;
+  final IsolateConnector<
+    IsolateTaskStreamResult<Device>,
+    SendToIsolateData<IsolateTask<HttpScanTask>>
+  >?
+  httpScanDiscovery;
+  final IsolateConnector<Device, SendToIsolateData<MulticastTask>>?
+  multicastDiscovery;
+  final List<
+    IsolateConnector<
+      IsolateTaskStreamResult<double>,
+      SendToIsolateData<IsolateTask<BaseHttpUploadTask>>
+    >
+  >
+  httpUpload;
   int get uploadIsolateCount => httpUpload.length;
 
   ParentIsolateState({
@@ -35,11 +46,11 @@ class ParentIsolateState with ParentIsolateStateMappable {
   });
 
   static ParentIsolateState initial(SyncState syncState) => ParentIsolateState(
-        syncState: syncState,
-        httpScanDiscovery: null,
-        multicastDiscovery: null,
-        httpUpload: [],
-      );
+    syncState: syncState,
+    httpScanDiscovery: null,
+    multicastDiscovery: null,
+    httpUpload: [],
+  );
 
   @override
   String toString() {
@@ -47,16 +58,15 @@ class ParentIsolateState with ParentIsolateStateMappable {
   }
 }
 
-final parentIsolateProvider = ReduxProvider<IsolateController, ParentIsolateState>((ref) {
-  throw 'Not initialized';
-});
+final parentIsolateProvider =
+    ReduxProvider<IsolateController, ParentIsolateState>((ref) {
+      throw 'Not initialized';
+    });
 
 class IsolateController extends ReduxNotifier<ParentIsolateState> {
   final ParentIsolateState initialState;
 
-  IsolateController({
-    required this.initialState,
-  });
+  IsolateController({required this.initialState});
 
   @override
   ParentIsolateState init() => initialState;
@@ -64,57 +74,73 @@ class IsolateController extends ReduxNotifier<ParentIsolateState> {
 
 /// Starts the required isolates.
 /// Should be called by the main isolate.
-class IsolateSetupAction extends AsyncReduxAction<IsolateController, ParentIsolateState> {
+class IsolateSetupAction
+    extends AsyncReduxAction<IsolateController, ParentIsolateState> {
   /// If provided, file paths starting with "content://" will be resolved using this resolver.
   final UriContentStreamResolver? uriContentStreamResolver;
 
-  IsolateSetupAction({
-    required this.uriContentStreamResolver,
-  });
+  IsolateSetupAction({required this.uriContentStreamResolver});
 
   @override
   Future<ParentIsolateState> reduce() async {
-    final httpScanDiscovery = await startIsolate<IsolateTaskStreamResult<Device>, SendToIsolateData<IsolateTask<HttpScanTask>>, InitialData>(
-      task: setupHttpScanDiscoveryIsolate,
-      param: InitialData(
-        syncState: state.syncState,
-        logLevel: Logger.root.level,
-      ),
-    );
-
-    final multicastDiscovery = await startIsolate<Device, SendToIsolateData<MulticastTask>, InitialData>(
-      task: setupMulticastDiscoveryIsolate,
-      param: InitialData(
-        syncState: state.syncState,
-        logLevel: Logger.root.level,
-      ),
-    );
-
-    final httpUploadIsolates = List.generate(
-      _uploadIsolateCount,
-      (index) async {
-        final httpUpload = await startIsolate<IsolateTaskStreamResult<double>, SendToIsolateData<IsolateTask<BaseHttpUploadTask>>, InitialData>(
-          task: setupHttpUploadIsolate,
+    final httpScanDiscovery =
+        await startIsolate<
+          IsolateTaskStreamResult<Device>,
+          SendToIsolateData<IsolateTask<HttpScanTask>>,
+          InitialData
+        >(
+          task: setupHttpScanDiscoveryIsolate,
           param: InitialData(
             syncState: state.syncState,
             logLevel: Logger.root.level,
           ),
         );
 
-        if (uriContentStreamResolver != null) {
-          httpUpload.sendToIsolate(SendToIsolateData(
+    final multicastDiscovery =
+        await startIsolate<
+          Device,
+          SendToIsolateData<MulticastTask>,
+          InitialData
+        >(
+          task: setupMulticastDiscoveryIsolate,
+          param: InitialData(
+            syncState: state.syncState,
+            logLevel: Logger.root.level,
+          ),
+        );
+
+    final httpUploadIsolates = List.generate(_uploadIsolateCount, (
+      index,
+    ) async {
+      final httpUpload =
+          await startIsolate<
+            IsolateTaskStreamResult<double>,
+            SendToIsolateData<IsolateTask<BaseHttpUploadTask>>,
+            InitialData
+          >(
+            task: setupHttpUploadIsolate,
+            param: InitialData(
+              syncState: state.syncState,
+              logLevel: Logger.root.level,
+            ),
+          );
+
+      if (uriContentStreamResolver != null) {
+        httpUpload.sendToIsolate(
+          SendToIsolateData(
             syncState: null,
             data: IsolateTask(
               id: -1,
-              data: HttpUploadSetContentStreamResolverTask(resolver: uriContentStreamResolver!),
+              data: HttpUploadSetContentStreamResolverTask(
+                resolver: uriContentStreamResolver!,
+              ),
             ),
-          ));
-        }
+          ),
+        );
+      }
 
-        return httpUpload;
-      },
-      growable: false,
-    );
+      return httpUpload;
+    }, growable: false);
 
     return state.copyWith(
       httpScanDiscovery: httpScanDiscovery,
@@ -124,7 +150,8 @@ class IsolateSetupAction extends AsyncReduxAction<IsolateController, ParentIsola
   }
 }
 
-class IsolateDisposeAction extends ReduxAction<IsolateController, ParentIsolateState> {
+class IsolateDisposeAction
+    extends ReduxAction<IsolateController, ParentIsolateState> {
   @override
   ParentIsolateState reduce() {
     state.httpScanDiscovery?.isolate.kill();

@@ -63,7 +63,9 @@ Future<BenchmarkResult> runSwarmBenchmark({
   final targetCount = targets.length;
 
   // -------- v2 leg --------
-  ref.notifier(swarmBenchmarkProgressProvider).setState(
+  ref
+      .notifier(swarmBenchmarkProgressProvider)
+      .setState(
         (_) => BenchmarkProgress('v2', 'Running v2 multi-send to $targetCount targets'),
       );
   int? v2Ms;
@@ -72,7 +74,9 @@ Future<BenchmarkResult> runSwarmBenchmark({
     final v2Start = DateTime.now().millisecondsSinceEpoch;
     await Future.wait([
       for (final t in targets)
-        ref.notifier(sendProvider).startSession(
+        ref
+            .notifier(sendProvider)
+            .startSession(
               target: t,
               files: files,
               background: true,
@@ -84,11 +88,13 @@ Future<BenchmarkResult> runSwarmBenchmark({
     v2Ms = DateTime.now().millisecondsSinceEpoch - v2Start;
     final sessions = ref.read(sendProvider).values.toList();
     final problems = sessions
-        .where((s) =>
-            s.status == SessionStatus.finishedWithErrors ||
-            s.status == SessionStatus.declined ||
-            s.status == SessionStatus.canceledBySender ||
-            s.status == SessionStatus.canceledByReceiver)
+        .where(
+          (s) =>
+              s.status == SessionStatus.finishedWithErrors ||
+              s.status == SessionStatus.declined ||
+              s.status == SessionStatus.canceledBySender ||
+              s.status == SessionStatus.canceledByReceiver,
+        )
         .map((s) => '${s.target.alias}:${s.status.name}')
         .join('|');
     if (problems.isNotEmpty) v2Error = problems;
@@ -99,14 +105,18 @@ Future<BenchmarkResult> runSwarmBenchmark({
   }
 
   // -------- v3 leg --------
-  ref.notifier(swarmBenchmarkProgressProvider).setState(
+  ref
+      .notifier(swarmBenchmarkProgressProvider)
+      .setState(
         (_) => BenchmarkProgress('v3', 'Running v3 swarm to $targetCount targets'),
       );
   int? v3Ms;
   String? v3Error;
   try {
     final v3Start = DateTime.now().millisecondsSinceEpoch;
-    final sid = await ref.notifier(swarmSendProvider).startSwarmSession(
+    final sid = await ref
+        .notifier(swarmSendProvider)
+        .startSwarmSession(
           targets: targets,
           files: files,
         );
@@ -137,9 +147,7 @@ Future<BenchmarkResult> runSwarmBenchmark({
     totalBytes.toString(),
     (v2Ms ?? -1).toString(),
     (v3Ms ?? -1).toString(),
-    (v2Ms != null && v3Ms != null && v3Ms > 0)
-        ? (v2Ms / v3Ms).toStringAsFixed(3)
-        : '',
+    (v2Ms != null && v3Ms != null && v3Ms > 0) ? (v2Ms / v3Ms).toStringAsFixed(3) : '',
     v2Error ?? '',
     v3Error ?? '',
   ]);
@@ -147,17 +155,19 @@ Future<BenchmarkResult> runSwarmBenchmark({
     final sink = csvFile.openWrite(mode: FileMode.append);
     try {
       if (isNew) {
-        sink.writeln(_csvRow([
-          'timestamp',
-          'targets',
-          'files',
-          'totalBytes',
-          'v2Ms',
-          'v3Ms',
-          'speedup_v2_over_v3',
-          'v2Error',
-          'v3Error',
-        ]));
+        sink.writeln(
+          _csvRow([
+            'timestamp',
+            'targets',
+            'files',
+            'totalBytes',
+            'v2Ms',
+            'v3Ms',
+            'speedup_v2_over_v3',
+            'v2Error',
+            'v3Error',
+          ]),
+        );
       }
       sink.writeln(row);
     } finally {
@@ -168,7 +178,9 @@ Future<BenchmarkResult> runSwarmBenchmark({
     _logger.warning('Could not write CSV at $csvPath', e, st);
   }
 
-  ref.notifier(swarmBenchmarkProgressProvider).setState(
+  ref
+      .notifier(swarmBenchmarkProgressProvider)
+      .setState(
         (_) => BenchmarkProgress('done', 'Done; CSV at $csvPath'),
       );
   return BenchmarkResult(

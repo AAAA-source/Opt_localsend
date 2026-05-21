@@ -30,23 +30,24 @@ class ChunkPlanDto {
 
   int chunkOffset(int index) => index * chunkSize;
 
-  int chunkLength(int index) => index == totalChunks - 1 ? lastChunkSize : chunkSize;
+  int chunkLength(int index) =>
+      index == totalChunks - 1 ? lastChunkSize : chunkSize;
 
   Map<String, dynamic> toJson() => {
-        'fileId': fileId,
-        'totalChunks': totalChunks,
-        'chunkSize': chunkSize,
-        'lastChunkSize': lastChunkSize,
-        'sha256PerChunk': sha256PerChunk,
-        'fileSha256': fileSha256,
-      };
+    'fileId': fileId,
+    'totalChunks': totalChunks,
+    'chunkSize': chunkSize,
+    'lastChunkSize': lastChunkSize,
+    'sha256PerChunk': sha256PerChunk,
+    'fileSha256': fileSha256,
+  };
 
   static ChunkPlanDto fromJson(Map<String, dynamic> map) => ChunkPlanDto(
-        fileId: map['fileId'] as String,
-        totalChunks: map['totalChunks'] as int,
-        chunkSize: map['chunkSize'] as int,
-        lastChunkSize: map['lastChunkSize'] as int,
-        sha256PerChunk: (map['sha256PerChunk'] as List).cast<String>(),
-        fileSha256: map['fileSha256'] as String,
-      );
+    fileId: map['fileId'] as String,
+    totalChunks: map['totalChunks'] as int,
+    chunkSize: map['chunkSize'] as int,
+    lastChunkSize: map['lastChunkSize'] as int,
+    sha256PerChunk: (map['sha256PerChunk'] as List).cast<String>(),
+    fileSha256: map['fileSha256'] as String,
+  );
 }

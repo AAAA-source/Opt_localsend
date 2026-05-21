@@ -382,6 +382,42 @@ class MockPersistenceService extends _i1.Mock implements _i3.PersistenceService 
           as _i4.Future<void>);
 
   @override
+  bool isSwarmEnabled() =>
+      (super.noSuchMethod(
+            Invocation.method(#isSwarmEnabled, []),
+            returnValue: false,
+            returnValueForMissingStub: false,
+          )
+          as bool);
+
+  @override
+  _i4.Future<void> setSwarmEnabled(bool? enabled) =>
+      (super.noSuchMethod(
+            Invocation.method(#setSwarmEnabled, [enabled]),
+            returnValue: _i4.Future<void>.value(),
+            returnValueForMissingStub: _i4.Future<void>.value(),
+          )
+          as _i4.Future<void>);
+
+  @override
+  int getSwarmChunkSize() =>
+      (super.noSuchMethod(
+            Invocation.method(#getSwarmChunkSize, []),
+            returnValue: 0,
+            returnValueForMissingStub: 0,
+          )
+          as int);
+
+  @override
+  _i4.Future<void> setSwarmChunkSize(int? size) =>
+      (super.noSuchMethod(
+            Invocation.method(#setSwarmChunkSize, [size]),
+            returnValue: _i4.Future<void>.value(),
+            returnValueForMissingStub: _i4.Future<void>.value(),
+          )
+          as _i4.Future<void>);
+
+  @override
   bool isQuickSave() =>
       (super.noSuchMethod(
             Invocation.method(#isQuickSave, []),

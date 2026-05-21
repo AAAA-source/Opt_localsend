@@ -17,6 +17,7 @@ dependencies:
     path: ../common
   connectivity_plus: 6.1.0
   convert: 3.1.2
+  crypto: ^3.0.3
   dart_mappable: 4.6.0
   desktop_drop: 0.5.0
   device_apps: 2.2.0

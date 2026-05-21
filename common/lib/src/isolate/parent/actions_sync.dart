@@ -7,44 +7,43 @@ import 'package:common/src/isolate/parent/parent_isolate_provider.dart';
 import 'package:refena/refena.dart';
 
 /// Publishes the new security context to all child isolates.
-class IsolateSyncSecurityContextAction extends ReduxAction<IsolateController, ParentIsolateState> {
+class IsolateSyncSecurityContextAction
+    extends ReduxAction<IsolateController, ParentIsolateState> {
   final StoredSecurityContext securityContext;
 
-  IsolateSyncSecurityContextAction({
-    required this.securityContext,
-  });
+  IsolateSyncSecurityContextAction({required this.securityContext});
 
   @override
   ParentIsolateState reduce() {
-    dispatch(_PublishSyncStateAction(
-      syncState: state.syncState.copyWith(
-        securityContext: securityContext,
+    dispatch(
+      _PublishSyncStateAction(
+        syncState: state.syncState.copyWith(securityContext: securityContext),
       ),
-    ));
+    );
     return state;
   }
 }
 
 /// Publishes the new device info to all child isolates.
-class IsolateSyncDeviceInfoAction extends ReduxAction<IsolateController, ParentIsolateState> {
+class IsolateSyncDeviceInfoAction
+    extends ReduxAction<IsolateController, ParentIsolateState> {
   final DeviceInfoResult deviceInfo;
 
-  IsolateSyncDeviceInfoAction({
-    required this.deviceInfo,
-  });
+  IsolateSyncDeviceInfoAction({required this.deviceInfo});
 
   @override
   ParentIsolateState reduce() {
-    dispatch(_PublishSyncStateAction(
-      syncState: state.syncState.copyWith(
-        deviceInfo: deviceInfo,
+    dispatch(
+      _PublishSyncStateAction(
+        syncState: state.syncState.copyWith(deviceInfo: deviceInfo),
       ),
-    ));
+    );
     return state;
   }
 }
 
-class IsolateSyncSettingsAction extends ReduxAction<IsolateController, ParentIsolateState> {
+class IsolateSyncSettingsAction
+    extends ReduxAction<IsolateController, ParentIsolateState> {
   final List<String>? networkWhitelist;
   final List<String>? networkBlacklist;
   final String multicastGroup;
@@ -59,19 +58,22 @@ class IsolateSyncSettingsAction extends ReduxAction<IsolateController, ParentIso
 
   @override
   ParentIsolateState reduce() {
-    dispatch(_PublishSyncStateAction(
-      syncState: state.syncState.copyWith(
-        networkWhitelist: networkWhitelist,
-        networkBlacklist: networkBlacklist,
-        multicastGroup: multicastGroup,
-        discoveryTimeout: discoveryTimeout,
+    dispatch(
+      _PublishSyncStateAction(
+        syncState: state.syncState.copyWith(
+          networkWhitelist: networkWhitelist,
+          networkBlacklist: networkBlacklist,
+          multicastGroup: multicastGroup,
+          discoveryTimeout: discoveryTimeout,
+        ),
       ),
-    ));
+    );
     return state;
   }
 }
 
-class IsolateSyncServerStateAction extends ReduxAction<IsolateController, ParentIsolateState> {
+class IsolateSyncServerStateAction
+    extends ReduxAction<IsolateController, ParentIsolateState> {
   final String alias;
   final int port;
   final ProtocolType protocol;
@@ -88,40 +90,37 @@ class IsolateSyncServerStateAction extends ReduxAction<IsolateController, Parent
 
   @override
   ParentIsolateState reduce() {
-    dispatch(_PublishSyncStateAction(
-      syncState: state.syncState.copyWith(
-        alias: alias,
-        port: port,
-        protocol: protocol,
-        serverRunning: serverRunning,
-        download: download,
+    dispatch(
+      _PublishSyncStateAction(
+        syncState: state.syncState.copyWith(
+          alias: alias,
+          port: port,
+          protocol: protocol,
+          serverRunning: serverRunning,
+          download: download,
+        ),
       ),
-    ));
+    );
     return state;
   }
 }
 
 /// Publishes the new [SyncState] to all child isolates.
-class _PublishSyncStateAction extends ReduxAction<IsolateController, ParentIsolateState> {
+class _PublishSyncStateAction
+    extends ReduxAction<IsolateController, ParentIsolateState> {
   final SyncState syncState;
 
-  _PublishSyncStateAction({
-    required this.syncState,
-  });
+  _PublishSyncStateAction({required this.syncState});
 
   @override
   ParentIsolateState reduce() {
-    state.httpScanDiscovery?.sendToIsolate(SendToIsolateData(
-      syncState: syncState,
-      data: null,
-    ));
-    state.multicastDiscovery?.sendToIsolate(SendToIsolateData(
-      syncState: syncState,
-      data: null,
-    ));
-
-    return state.copyWith(
-      syncState: syncState,
+    state.httpScanDiscovery?.sendToIsolate(
+      SendToIsolateData(syncState: syncState, data: null),
     );
+    state.multicastDiscovery?.sendToIsolate(
+      SendToIsolateData(syncState: syncState, data: null),
+    );
+
+    return state.copyWith(syncState: syncState);
   }
 }

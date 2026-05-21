@@ -15,7 +15,11 @@ void main() {
       continue;
     }
 
-    if (pr.contains('i18n') || pr.contains('translation') || pr.contains('translator') || pr.contains('translate') || pr.contains('language')) {
+    if (pr.contains('i18n') ||
+        pr.contains('translation') ||
+        pr.contains('translator') ||
+        pr.contains('translate') ||
+        pr.contains('language')) {
       translators.add('@' + originalPr.split(' @').last);
     } else if (pr.contains('readme') || pr.contains('contributing')) {
       documentations.add('@' + originalPr.split(' @').last);
@@ -24,7 +28,12 @@ void main() {
     }
   }
 
-  final content = newContributions.join('\n') + '\n' + '* docs: ${documentations.join(', ')}' + '\n' + '* i18n: ${translators.join(', ')}';
+  final content =
+      newContributions.join('\n') +
+      '\n' +
+      '* docs: ${documentations.join(', ')}' +
+      '\n' +
+      '* i18n: ${translators.join(', ')}';
   print('Content: $content');
 
   File('contributions_digested.txt').writeAsStringSync(content);

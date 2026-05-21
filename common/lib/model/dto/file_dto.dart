@@ -13,10 +13,7 @@ class FileMetadata with FileMetadataMappable {
   @MappableField(key: 'accessed')
   final DateTime? lastAccessed;
 
-  const FileMetadata({
-    required this.lastModified,
-    required this.lastAccessed,
-  });
+  const FileMetadata({required this.lastModified, required this.lastAccessed});
 }
 
 /// The file DTO that is sent between server and client.
@@ -70,7 +67,9 @@ class FileDtoMapper extends SimpleMapper<FileDto> {
       fileType = decodeFromMime(rawFileType);
     } else {
       // parse legacy enum to internal internal enum
-      fileType = FileType.values.firstWhereOrNull((e) => e.name == rawFileType) ?? FileType.other;
+      fileType =
+          FileType.values.firstWhereOrNull((e) => e.name == rawFileType) ??
+          FileType.other;
     }
 
     return FileDto(

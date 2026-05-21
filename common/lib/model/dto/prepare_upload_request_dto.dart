@@ -9,10 +9,7 @@ class PrepareUploadRequestDto with PrepareUploadRequestDtoMappable {
   final InfoRegisterDto info;
   final Map<String, FileDto> files;
 
-  const PrepareUploadRequestDto({
-    required this.info,
-    required this.files,
-  });
+  const PrepareUploadRequestDto({required this.info, required this.files});
 
   static const fromJson = PrepareUploadRequestDtoMapper.fromJson;
 }

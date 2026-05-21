@@ -19,13 +19,12 @@ enum ApiRoute {
   uploadChunk('upload-chunk'),
   downloadChunk('chunk'),
   bitmap('bitmap'),
-  announce('announce'),
-  ;
+  announce('announce');
 
   const ApiRoute(String path, [String? legacy])
-      : v1 = '$_basePath/v1/${legacy ?? path}',
-        v2 = '$_basePath/v2/$path',
-        v3 = '$_basePath/v3/$path';
+    : v1 = '$_basePath/v1/${legacy ?? path}',
+      v2 = '$_basePath/v2/$path',
+      v3 = '$_basePath/v3/$path';
 
   /// The server url for v1
   final String v1;

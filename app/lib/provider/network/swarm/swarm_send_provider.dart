@@ -95,12 +95,8 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
         size: f.size,
         fileType: f.fileType,
         hash: null,
-        preview: f.fileType == FileType.text && f.bytes != null
-            ? utf8.decode(f.bytes!)
-            : null,
-        metadata: f.lastModified != null || f.lastAccessed != null
-            ? FileMetadata(lastModified: f.lastModified, lastAccessed: f.lastAccessed)
-            : null,
+        preview: f.fileType == FileType.text && f.bytes != null ? utf8.decode(f.bytes!) : null,
+        metadata: f.lastModified != null || f.lastAccessed != null ? FileMetadata(lastModified: f.lastModified, lastAccessed: f.lastAccessed) : null,
       );
       filePaths[id] = f.path!;
     }
@@ -142,9 +138,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
           filePath: filePaths[fid]!,
           chunkSize: chunkSize,
           onProgress: (p) {
-            final overall = totalBytes == 0
-                ? 1.0
-                : (hashedBytes + p * entry.value.size) / totalBytes;
+            final overall = totalBytes == 0 ? 1.0 : (hashedBytes + p * entry.value.size) / totalBytes;
             state = _patch(sessionId, (s) => s.copyWith(prepareProgress: overall));
           },
         );
@@ -154,17 +148,23 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       }
     } catch (e, st) {
       _logger.severe('Pre-hashing failed', e, st);
-      state = _patch(sessionId, (s) => s.copyWith(
-            status: SessionStatus.finishedWithErrors,
-            errorMessage: 'Hashing failed: $e',
-          ));
+      state = _patch(
+        sessionId,
+        (s) => s.copyWith(
+          status: SessionStatus.finishedWithErrors,
+          errorMessage: 'Hashing failed: $e',
+        ),
+      );
       return sessionId;
     }
-    state = _patch(sessionId, (s) => s.copyWith(
-          plans: plans,
-          prepareProgress: 1,
-          prepareEndTime: DateTime.now().millisecondsSinceEpoch,
-        ));
+    state = _patch(
+      sessionId,
+      (s) => s.copyWith(
+        plans: plans,
+        prepareProgress: 1,
+        prepareEndTime: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
 
     // Phase B: POST prepare-swarm to every target in parallel
     final security = ref.read(securityProvider);
@@ -200,27 +200,31 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     for (var i = 0; i < targets.length; i++) {
       final idx = i;
       final t = targets[i];
-      acceptFutures.add(_prepareOnTarget(
-        http: http,
-        target: t,
-        request: PrepareSwarmRequestDto(
-          info: info,
-          sessionId: sessionId,
-          files: fileDtos,
-          plans: plans,
-          peers: peers,
-          myIndex: idx,
-        ),
-      ).then((tokensForTarget) {
-        if (tokensForTarget != null && tokensForTarget.isNotEmpty) {
-          tokens[t.fingerprint] = tokensForTarget;
-          return true;
-        }
-        return false;
-      }).catchError((e, st) {
-        _logger.warning('prepare-swarm failed for ${t.alias} (${t.ip})', e, st);
-        return false;
-      }));
+      acceptFutures.add(
+        _prepareOnTarget(
+              http: http,
+              target: t,
+              request: PrepareSwarmRequestDto(
+                info: info,
+                sessionId: sessionId,
+                files: fileDtos,
+                plans: plans,
+                peers: peers,
+                myIndex: idx,
+              ),
+            )
+            .then((tokensForTarget) {
+              if (tokensForTarget != null && tokensForTarget.isNotEmpty) {
+                tokens[t.fingerprint] = tokensForTarget;
+                return true;
+              }
+              return false;
+            })
+            .catchError((e, st) {
+              _logger.warning('prepare-swarm failed for ${t.alias} (${t.ip})', e, st);
+              return false;
+            }),
+      );
     }
     final accepts = await Future.wait(acceptFutures);
     final acceptedTargets = <Device>[
@@ -228,16 +232,22 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
         if (accepts[i]) targets[i],
     ];
     if (acceptedTargets.isEmpty) {
-      state = _patch(sessionId, (s) => s.copyWith(
-            status: SessionStatus.declined,
-            endTime: DateTime.now().millisecondsSinceEpoch,
-          ));
+      state = _patch(
+        sessionId,
+        (s) => s.copyWith(
+          status: SessionStatus.declined,
+          endTime: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
       return sessionId;
     }
-    state = _patch(sessionId, (s) => s.copyWith(
-          status: SessionStatus.sending,
-          tokens: tokens,
-        ));
+    state = _patch(
+      sessionId,
+      (s) => s.copyWith(
+        status: SessionStatus.sending,
+        tokens: tokens,
+      ),
+    );
 
     // Phase C: dispatch chunks round-robin and run altruistic fallback loop
     final stop = Completer<void>();
@@ -278,15 +288,9 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
   void _emitSenderBenchmarkLog(String sessionId) {
     final ss = state[sessionId];
     if (ss == null) return;
-    final prepareMs = (ss.prepareStartTime != null && ss.prepareEndTime != null)
-        ? ss.prepareEndTime! - ss.prepareStartTime!
-        : -1;
-    final sendMs = (ss.firstChunkSentAt != null && ss.lastChunkSentAt != null)
-        ? ss.lastChunkSentAt! - ss.firstChunkSentAt!
-        : -1;
-    final lastReceiverMs = ss.peerCompleteTime.values.isEmpty
-        ? -1
-        : ss.peerCompleteTime.values.reduce((a, b) => a > b ? a : b) - ss.startTime;
+    final prepareMs = (ss.prepareStartTime != null && ss.prepareEndTime != null) ? ss.prepareEndTime! - ss.prepareStartTime! : -1;
+    final sendMs = (ss.firstChunkSentAt != null && ss.lastChunkSentAt != null) ? ss.lastChunkSentAt! - ss.firstChunkSentAt! : -1;
+    final lastReceiverMs = ss.peerCompleteTime.values.isEmpty ? -1 : ss.peerCompleteTime.values.reduce((a, b) => a > b ? a : b) - ss.startTime;
     final peerTimings = ss.peerCompleteTime.entries
         .map((e) => '${e.key.substring(0, e.key.length < 8 ? e.key.length : 8)}@${e.value - ss.startTime}')
         .join(';');
@@ -350,14 +354,16 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       // spawn _perTargetConcurrency workers per target.
       // Dart is single-threaded, so removeAt(0) is safe without an explicit mutex.
       for (var w = 0; w < _perTargetConcurrency; w++) {
-        futures.add(_uploadWorker(
-          sessionId: sessionId,
-          http: http,
-          target: target,
-          queue: assignedChunks,
-          filePaths: filePaths,
-          lastAttempt: lastAttempt,
-        ));
+        futures.add(
+          _uploadWorker(
+            sessionId: sessionId,
+            http: http,
+            target: target,
+            queue: assignedChunks,
+            filePaths: filePaths,
+            lastAttempt: lastAttempt,
+          ),
+        );
       }
     }
 

@@ -3,13 +3,7 @@ import 'package:dart_mappable/dart_mappable.dart';
 part 'device.mapper.dart';
 
 @MappableEnum(defaultValue: DeviceType.desktop)
-enum DeviceType {
-  mobile,
-  desktop,
-  web,
-  headless,
-  server,
-}
+enum DeviceType { mobile, desktop, web, headless, server }
 
 @MappableClass()
 sealed class DiscoveryMethod with DiscoveryMethodMappable {
@@ -17,7 +11,8 @@ sealed class DiscoveryMethod with DiscoveryMethodMappable {
 }
 
 @MappableClass()
-class MulticastDiscovery extends DiscoveryMethod with MulticastDiscoveryMappable {
+class MulticastDiscovery extends DiscoveryMethod
+    with MulticastDiscoveryMappable {
   const MulticastDiscovery();
 }
 
@@ -29,7 +24,8 @@ class HttpDiscovery extends DiscoveryMethod with HttpDiscoveryMappable {
 }
 
 @MappableClass()
-class SignalingDiscovery extends DiscoveryMethod with SignalingDiscoveryMappable {
+class SignalingDiscovery extends DiscoveryMethod
+    with SignalingDiscoveryMappable {
   final String signalingServer;
 
   const SignalingDiscovery({required this.signalingServer});

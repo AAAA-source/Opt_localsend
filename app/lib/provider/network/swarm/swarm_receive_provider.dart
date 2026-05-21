@@ -4,9 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:common/api_route_builder.dart';
-import 'package:common/model/device.dart';
 import 'package:common/model/dto/swarm/announce_dto.dart';
-import 'package:common/model/dto/swarm/bitmap_dto.dart';
 import 'package:common/model/dto/swarm/peer_info.dart';
 import 'package:common/model/file_status.dart';
 import 'package:common/model/session_status.dart';
@@ -208,7 +206,8 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
             await broadcastBitmap(rf.file.id);
           }
         } catch (e) {
-          _logger.fine('peer pull failed ${rf.file.id}#$k from ${source.alias}: $e');
+          // _logger.fine('peer pull failed ${rf.file.id}#$k from ${source.alias}: $e');
+          _logger.fine('peer pull failed ${rf.file.id}#$k from ${source.fingerprint}: $e');
           // mark the peer bitmap as "doesn't have it" so we don't loop hot
           final s2 = state;
           if (s2 != null) {
@@ -252,8 +251,7 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
       _AnnounceTarget(ip: s.sender.ip ?? '', port: s.sender.port, https: s.sender.https),
       ...[
         for (final peer in s.peers)
-          if (peer.fingerprint != me)
-            _AnnounceTarget(ip: peer.ip, port: peer.port, https: peer.https),
+          if (peer.fingerprint != me) _AnnounceTarget(ip: peer.ip, port: peer.port, https: peer.https),
       ],
     ];
     final client = _client;
@@ -317,12 +315,8 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     final startMs = s.startTime;
     final totalBytes = s.totalBytes;
     final totalChunks = s.files.values.fold<int>(0, (a, f) => a + f.plan.totalChunks);
-    final firstMs = (startMs != null && s.firstChunkReceivedAt != null)
-        ? s.firstChunkReceivedAt! - startMs
-        : -1;
-    final lastMs = (startMs != null && s.lastChunkReceivedAt != null)
-        ? s.lastChunkReceivedAt! - startMs
-        : -1;
+    final firstMs = (startMs != null && s.firstChunkReceivedAt != null) ? s.firstChunkReceivedAt! - startMs : -1;
+    final lastMs = (startMs != null && s.lastChunkReceivedAt != null) ? s.lastChunkReceivedAt! - startMs : -1;
     final breakdown = <String, int>{};
     for (final rf in s.files.values) {
       rf.chunksFromSource.forEach((k, v) {

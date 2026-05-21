@@ -24,10 +24,7 @@ class HttpFavoriteScanTask implements HttpScanTask {
   final List<(String, int)> favorites;
   final bool https;
 
-  HttpFavoriteScanTask({
-    required this.favorites,
-    required this.https,
-  });
+  HttpFavoriteScanTask({required this.favorites, required this.https});
 }
 
 @internal
@@ -43,25 +40,23 @@ Future<void> setupHttpScanDiscoveryIsolate(
     initialData: initialData,
     handler: (ref, task) async {
       final stream = switch (task.data) {
-        HttpInterfaceScanTask data => ref.read(httpScanDiscoveryProvider).getStream(
-              networkInterface: data.networkInterface,
-              port: data.port,
-              https: data.https,
-            ),
-        HttpFavoriteScanTask data => ref.read(httpScanDiscoveryProvider).getFavoriteStream(
-              devices: data.favorites,
-              https: data.https,
-            ),
+        HttpInterfaceScanTask data =>
+          ref
+              .read(httpScanDiscoveryProvider)
+              .getStream(
+                networkInterface: data.networkInterface,
+                port: data.port,
+                https: data.https,
+              ),
+        HttpFavoriteScanTask data =>
+          ref
+              .read(httpScanDiscoveryProvider)
+              .getFavoriteStream(devices: data.favorites, https: data.https),
       };
       await for (final device in stream) {
-        sendToMain(IsolateTaskStreamResult.event(
-          id: task.id,
-          data: device,
-        ));
+        sendToMain(IsolateTaskStreamResult.event(id: task.id, data: device));
       }
-      sendToMain(IsolateTaskStreamResult.done(
-        id: task.id,
-      ));
+      sendToMain(IsolateTaskStreamResult.done(id: task.id));
     },
   );
 }

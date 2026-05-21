@@ -14,7 +14,8 @@ part 'sync_provider.mapper.dart';
 class SyncState with SyncStateMappable {
   final Future<void> Function() init;
   final Object rootIsolateToken;
-  final CustomHttpClient Function(Duration timeout, StoredSecurityContext) httpClientFactory;
+  final CustomHttpClient Function(Duration timeout, StoredSecurityContext)
+  httpClientFactory;
   final StoredSecurityContext securityContext;
   final DeviceInfoResult deviceInfo;
   final String alias;
@@ -59,9 +60,7 @@ final syncProvider = ReduxProvider<SyncService, SyncState>((ref) {
 class SyncService extends ReduxNotifier<SyncState> {
   final SyncState initial;
 
-  SyncService({
-    required this.initial,
-  });
+  SyncService({required this.initial});
 
   @override
   SyncState init() => initial;

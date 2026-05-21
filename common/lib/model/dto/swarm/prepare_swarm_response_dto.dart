@@ -12,12 +12,10 @@ class PrepareSwarmResponseDto {
     required this.tokens,
   });
 
-  Map<String, dynamic> toJson() => {
-        'sessionId': sessionId,
-        'tokens': tokens,
-      };
+  Map<String, dynamic> toJson() => {'sessionId': sessionId, 'tokens': tokens};
 
-  static PrepareSwarmResponseDto fromJson(Map<String, dynamic> map) => PrepareSwarmResponseDto(
+  static PrepareSwarmResponseDto fromJson(Map<String, dynamic> map) =>
+      PrepareSwarmResponseDto(
         sessionId: map['sessionId'] as String,
         tokens: (map['tokens'] as Map<String, dynamic>).cast<String, String>(),
       );

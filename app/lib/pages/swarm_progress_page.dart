@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:common/model/session_status.dart';
 import 'package:flutter/material.dart';
 import 'package:localsend_app/model/state/swarm/swarm_receive_state.dart';
@@ -32,12 +30,8 @@ class SwarmProgressPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: showAppBar
-          ? basicLocalSendAppbar(senderSessionId != null ? 'Swarm sending' : 'Swarm receiving')
-          : null,
-      body: senderSessionId != null
-          ? _SwarmSenderView(sessionId: senderSessionId!)
-          : const _SwarmReceiverView(),
+      appBar: showAppBar ? basicLocalSendAppbar(senderSessionId != null ? 'Swarm sending' : 'Swarm receiving') : null,
+      body: senderSessionId != null ? _SwarmSenderView(sessionId: senderSessionId!) : const _SwarmReceiverView(),
     );
   }
 }
@@ -70,9 +64,7 @@ class _SenderBody extends StatelessWidget {
     final totalChunks = state.totalChunks;
     final sentChunks = state.sentChunks;
     final preparing = state.status == SessionStatus.waiting;
-    final overall = preparing
-        ? state.prepareProgress
-        : (totalChunks == 0 ? 0.0 : sentChunks / totalChunks);
+    final overall = preparing ? state.prepareProgress : (totalChunks == 0 ? 0.0 : sentChunks / totalChunks);
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 100),
       children: [
@@ -81,13 +73,10 @@ class _SenderBody extends StatelessWidget {
         _Section(
           title: preparing ? 'Preparing (hashing)' : 'Direct uploads (sender → peers)',
           progress: overall.clamp(0.0, 1.0),
-          subtitle: preparing
-              ? '${(overall * 100).toStringAsFixed(1)}%'
-              : '$sentChunks / $totalChunks chunks · ${totalBytes.asReadableFileSize}',
+          subtitle: preparing ? '${(overall * 100).toStringAsFixed(1)}%' : '$sentChunks / $totalChunks chunks · ${totalBytes.asReadableFileSize}',
         ),
         const SizedBox(height: 16),
-        Text('Targets (${state.targets.length})',
-            style: Theme.of(context).textTheme.titleMedium),
+        Text('Targets (${state.targets.length})', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 6),
         ...state.targets.map((t) {
           final completeMs = state.peerCompleteTime[t.fingerprint];
@@ -99,8 +88,7 @@ class _SenderBody extends StatelessWidget {
             subtitle: Text(t.ip ?? '(no ip)'),
             trailing: tookMs == null
                 ? const Text('…', style: TextStyle(color: Colors.grey))
-                : Text('${(tookMs / 1000).toStringAsFixed(1)} s',
-                    style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()])),
+                : Text('${(tookMs / 1000).toStringAsFixed(1)} s', style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()])),
           );
         }),
         const SizedBox(height: 16),
@@ -116,12 +104,8 @@ class _SenderTimingFooter extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final prepareMs = (state.prepareStartTime != null && state.prepareEndTime != null)
-        ? state.prepareEndTime! - state.prepareStartTime!
-        : null;
-    final sendMs = (state.firstChunkSentAt != null && state.lastChunkSentAt != null)
-        ? state.lastChunkSentAt! - state.firstChunkSentAt!
-        : null;
+    final prepareMs = (state.prepareStartTime != null && state.prepareEndTime != null) ? state.prepareEndTime! - state.prepareStartTime! : null;
+    final sendMs = (state.firstChunkSentAt != null && state.lastChunkSentAt != null) ? state.lastChunkSentAt! - state.firstChunkSentAt! : null;
     final lastReceiverMs = state.peerCompleteTime.values.isEmpty
         ? null
         : state.peerCompleteTime.values.reduce((a, b) => a > b ? a : b) - state.startTime;
@@ -186,13 +170,10 @@ class _ReceiverBody extends StatelessWidget {
           subtitle: '${receivedBytes.asReadableFileSize} / ${totalBytes.asReadableFileSize}',
         ),
         const SizedBox(height: 12),
-        Text('Files (${state.files.length})',
-            style: Theme.of(context).textTheme.titleMedium),
+        Text('Files (${state.files.length})', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 6),
         ...state.files.values.map((rf) {
-          final filePct = rf.plan.totalChunks == 0
-              ? 0.0
-              : rf.bitmap.receivedCount / rf.plan.totalChunks;
+          final filePct = rf.plan.totalChunks == 0 ? 0.0 : rf.bitmap.receivedCount / rf.plan.totalChunks;
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Column(
@@ -206,8 +187,7 @@ class _ReceiverBody extends StatelessWidget {
                   '${rf.bitmap.receivedCount}/${rf.plan.totalChunks} chunks',
                   style: const TextStyle(color: Colors.grey, fontSize: 12),
                 ),
-                if (rf.errorMessage != null)
-                  Text(rf.errorMessage!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                if (rf.errorMessage != null) Text(rf.errorMessage!, style: const TextStyle(color: Colors.red, fontSize: 12)),
               ],
             ),
           );
@@ -219,9 +199,7 @@ class _ReceiverBody extends StatelessWidget {
           const Text('No chunks received yet', style: TextStyle(color: Colors.grey))
         else
           ...globalBreakdown.entries.map((e) {
-            final label = e.key == 'sender'
-                ? 'sender'
-                : 'peer ${e.key.substring(0, e.key.length < 8 ? e.key.length : 8)}';
+            final label = e.key == 'sender' ? 'sender' : 'peer ${e.key.substring(0, e.key.length < 8 ? e.key.length : 8)}';
             return ListTile(
               dense: true,
               leading: Icon(e.key == 'sender' ? Icons.cloud_upload : Icons.hub),

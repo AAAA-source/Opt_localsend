@@ -22,8 +22,8 @@ class TaskRunner<T> {
     List<FutureFunction<T>>? initialTasks,
     bool? stayAlive,
     this.onFinish,
-  })  : _queue = Queue()..addAll(initialTasks ?? []),
-        _stayAlive = stayAlive ?? initialTasks == null || initialTasks.isEmpty {
+  }) : _queue = Queue()..addAll(initialTasks ?? []),
+       _stayAlive = stayAlive ?? initialTasks == null || initialTasks.isEmpty {
     _fireRunners();
   }
 
@@ -40,7 +40,9 @@ class TaskRunner<T> {
 
   /// Starts multiple runners until [concurrency].
   void _fireRunners() {
-    while (_queue.isNotEmpty && _runnerCount < concurrency && !_streamController.isClosed) {
+    while (_queue.isNotEmpty &&
+        _runnerCount < concurrency &&
+        !_streamController.isClosed) {
       _runnerCount++;
 
       unawaited(

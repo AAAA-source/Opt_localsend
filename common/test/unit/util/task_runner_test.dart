@@ -12,7 +12,7 @@ void main() {
             [10, null],
             [30, 'a'],
             [20, 'b'],
-            [40, 'c']
+            [40, 'c'],
           ])
             () async {
               final delay = data[0] as int;

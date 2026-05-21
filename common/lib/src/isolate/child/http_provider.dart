@@ -3,10 +3,7 @@ import 'package:refena/refena.dart';
 
 /// An abstraction to provide a custom http client.
 abstract class CustomHttpClient {
-  Future<String> get({
-    required String uri,
-    required Map<String, String> query,
-  });
+  Future<String> get({required String uri, required Map<String, String> query});
 
   Future<String> post({
     required String uri,
@@ -40,17 +37,24 @@ class HttpClientCollection {
   final CustomHttpClient discovery;
   final CustomHttpClient longLiving;
 
-  HttpClientCollection({
-    required this.discovery,
-    required this.longLiving,
-  });
+  HttpClientCollection({required this.discovery, required this.longLiving});
 }
 
 final httpProvider = ViewProvider((ref) {
-  final (clientFactory, securityContext, discoveryTimeout) =
-      ref.watch(syncProvider.select((state) => (state.httpClientFactory, state.securityContext, state.discoveryTimeout)));
+  final (clientFactory, securityContext, discoveryTimeout) = ref.watch(
+    syncProvider.select(
+      (state) => (
+        state.httpClientFactory,
+        state.securityContext,
+        state.discoveryTimeout,
+      ),
+    ),
+  );
   return HttpClientCollection(
-    discovery: clientFactory(Duration(milliseconds: discoveryTimeout), securityContext),
+    discovery: clientFactory(
+      Duration(milliseconds: discoveryTimeout),
+      securityContext,
+    ),
     longLiving: clientFactory(const Duration(days: 30), securityContext),
   );
 });

@@ -63,8 +63,7 @@ class _BenchmarkPageState extends State<BenchmarkPage> with Refena {
             const SizedBox(height: 6),
             Text('${files.length} file(s), ${totalBytes.asReadableFileSize}'),
             const SizedBox(height: 12),
-            Text('Targets (${targets.length})',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text('Targets (${targets.length})', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 6),
             ...targets.map((t) => Text('• ${t.alias} (${t.ip ?? "?"})')),
             const SizedBox(height: 20),
@@ -73,9 +72,7 @@ class _BenchmarkPageState extends State<BenchmarkPage> with Refena {
                 ElevatedButton.icon(
                   onPressed: _running ? null : _run,
                   icon: _running
-                      ? const SizedBox(
-                          width: 16, height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2))
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.play_arrow),
                   label: Text(_running ? 'Running…' : 'Start'),
                 ),
@@ -99,8 +96,7 @@ class _BenchmarkPageState extends State<BenchmarkPage> with Refena {
             if (_runError != null)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
-                child: Text(_runError!,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                child: Text(_runError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
               ),
             if (_result != null) ...[
               const SizedBox(height: 12),
@@ -121,9 +117,7 @@ class _ResultCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final speedup = (result.v2Ms != null && result.v3Ms != null && result.v3Ms! > 0)
-        ? (result.v2Ms! / result.v3Ms!).toStringAsFixed(2)
-        : '—';
+    final speedup = (result.v2Ms != null && result.v3Ms != null && result.v3Ms! > 0) ? (result.v2Ms! / result.v3Ms!).toStringAsFixed(2) : '—';
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -135,16 +129,12 @@ class _ResultCard extends StatelessWidget {
             Text('Targets: ${result.targetCount}'),
             Text('Payload: ${result.totalBytes.asReadableFileSize}'),
             const SizedBox(height: 8),
-            Text('v2 multi-send: ${_fmtMs(result.v2Ms)}',
-                style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text('v2 multi-send: ${_fmtMs(result.v2Ms)}', style: const TextStyle(fontWeight: FontWeight.bold)),
             if (result.v2Error != null && result.v2Error!.isNotEmpty)
-              Text('  errors: ${result.v2Error}',
-                  style: const TextStyle(color: Colors.orange)),
-            Text('v3 swarm:      ${_fmtMs(result.v3Ms)}',
-                style: const TextStyle(fontWeight: FontWeight.bold)),
+              Text('  errors: ${result.v2Error}', style: const TextStyle(color: Colors.orange)),
+            Text('v3 swarm:      ${_fmtMs(result.v3Ms)}', style: const TextStyle(fontWeight: FontWeight.bold)),
             if (result.v3Error != null && result.v3Error!.isNotEmpty)
-              Text('  errors: ${result.v3Error}',
-                  style: const TextStyle(color: Colors.orange)),
+              Text('  errors: ${result.v3Error}', style: const TextStyle(color: Colors.orange)),
             const SizedBox(height: 6),
             Text('v2/v3 ratio: $speedup'),
             const SizedBox(height: 12),

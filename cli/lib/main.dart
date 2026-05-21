@@ -6,9 +6,27 @@ import 'package:path/path.dart' as path;
 Future<void> main(List<String> arguments) async {
   final parser = ArgParser();
 
-  parser.addFlag('help', abbr: 'h', negatable: false, help: 'Prints usage information', defaultsTo: false);
-  parser.addFlag('receive', abbr: 'r', negatable: false, help: 'Start a server to receive files', defaultsTo: false);
-  parser.addFlag('send', abbr: 's', negatable: false, help: 'Setups a client to send files', defaultsTo: false);
+  parser.addFlag(
+    'help',
+    abbr: 'h',
+    negatable: false,
+    help: 'Prints usage information',
+    defaultsTo: false,
+  );
+  parser.addFlag(
+    'receive',
+    abbr: 'r',
+    negatable: false,
+    help: 'Start a server to receive files',
+    defaultsTo: false,
+  );
+  parser.addFlag(
+    'send',
+    abbr: 's',
+    negatable: false,
+    help: 'Setups a client to send files',
+    defaultsTo: false,
+  );
 
   final results = parser.parse(arguments);
 

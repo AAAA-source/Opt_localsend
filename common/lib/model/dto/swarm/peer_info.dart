@@ -14,16 +14,16 @@ class PeerInfo {
   });
 
   Map<String, dynamic> toJson() => {
-        'fingerprint': fingerprint,
-        'ip': ip,
-        'port': port,
-        'https': https,
-      };
+    'fingerprint': fingerprint,
+    'ip': ip,
+    'port': port,
+    'https': https,
+  };
 
   static PeerInfo fromJson(Map<String, dynamic> map) => PeerInfo(
-        fingerprint: map['fingerprint'] as String,
-        ip: map['ip'] as String,
-        port: map['port'] as int,
-        https: map['https'] as bool,
-      );
+    fingerprint: map['fingerprint'] as String,
+    ip: map['ip'] as String,
+    port: map['port'] as int,
+    https: map['https'] as bool,
+  );
 }

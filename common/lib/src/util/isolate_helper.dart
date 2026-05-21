@@ -32,7 +32,12 @@ class IsolateConnector<R, S> {
 /// [S] is the type of the messages that the main isolate will **send** to the spawned isolate.
 /// [P] is the type of the parameter that is passed to the spawned isolate.
 Future<IsolateConnector<R, S>> startIsolate<R, S, P>({
-  required Future<void> Function(Stream<S> receiveFromMain, void Function(R) sendToMain, P param) task,
+  required Future<void> Function(
+    Stream<S> receiveFromMain,
+    void Function(R) sendToMain,
+    P param,
+  )
+  task,
   required P param,
 }) async {
   final receivePort = ReceivePort();
@@ -52,7 +57,9 @@ Future<IsolateConnector<R, S>> startIsolate<R, S, P>({
         sendToIsolateCompleter.complete(message);
         break;
       default:
-        print('Unexpected type when receiving message from isolate: "$message" that has type <${message.runtimeType}> but only <$R> is expected.');
+        print(
+          'Unexpected type when receiving message from isolate: "$message" that has type <${message.runtimeType}> but only <$R> is expected.',
+        );
     }
   });
   final sendToIsolate = await sendToIsolateCompleter.future;
@@ -72,7 +79,12 @@ class _IsolateParam<R, S, P> {
   final SendPort _sendToMain;
 
   /// The task that the isolate will run.
-  final Future<void> Function(Stream<S> receiveFromMain, void Function(R) sendToMain, P param) task;
+  final Future<void> Function(
+    Stream<S> receiveFromMain,
+    void Function(R) sendToMain,
+    P param,
+  )
+  task;
 
   /// The parameter that is passed to the task.
   final P param;

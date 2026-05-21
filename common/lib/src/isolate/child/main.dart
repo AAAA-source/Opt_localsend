@@ -16,10 +16,7 @@ class InitialData {
   final SyncState syncState;
   final Level logLevel;
 
-  InitialData({
-    required this.syncState,
-    required this.logLevel,
-  });
+  InitialData({required this.syncState, required this.logLevel});
 }
 
 /// A helper to setup the child isolate,
@@ -43,9 +40,7 @@ Future<void> setupChildIsolateHelper<S, R>({
 
   _isolateContainer.set(
     syncProvider.overrideWithNotifier(
-      (ref) => SyncService(
-        initial: initialData.syncState,
-      ),
+      (ref) => SyncService(initial: initialData.syncState),
     ),
   );
 
@@ -55,7 +50,9 @@ Future<void> setupChildIsolateHelper<S, R>({
     await init(_isolateContainer);
   }
 
-  _logger.info('Child isolate is ready: $debugLabel (logLevel: ${initialData.logLevel})');
+  _logger.info(
+    'Child isolate is ready: $debugLabel (logLevel: ${initialData.logLevel})',
+  );
 
   await for (final message in receiveFromMain) {
     _handleMessage(debugLabel, message, handler);
@@ -63,10 +60,16 @@ Future<void> setupChildIsolateHelper<S, R>({
 }
 
 // separate function to avoid blocking the for loop
-void _handleMessage<S>(String debugLabel, SendToIsolateData<S> message, Future<void> Function(Ref ref, S data) handler) async {
+void _handleMessage<S>(
+  String debugLabel,
+  SendToIsolateData<S> message,
+  Future<void> Function(Ref ref, S data) handler,
+) async {
   final syncState = message.syncState;
   if (syncState != null) {
-    _isolateContainer.redux(syncProvider).dispatch(UpdateSyncStateAction(syncState));
+    _isolateContainer
+        .redux(syncProvider)
+        .dispatch(UpdateSyncStateAction(syncState));
   }
 
   final data = message.data;

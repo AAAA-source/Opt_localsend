@@ -25,19 +25,21 @@ class PrepareSwarmRequestDto {
   });
 
   Map<String, dynamic> toJson() => {
-        'info': info.toJson(),
-        'sessionId': sessionId,
-        'files': {
-          for (final entry in files.entries) entry.key: FileDtoMapper().encode(entry.value),
-        },
-        'plans': {
-          for (final entry in plans.entries) entry.key: entry.value.toJson(),
-        },
-        'peers': peers.map((p) => p.toJson()).toList(),
-        'myIndex': myIndex,
-      };
+    'info': info.toJson(),
+    'sessionId': sessionId,
+    'files': {
+      for (final entry in files.entries)
+        entry.key: FileDtoMapper().encode(entry.value),
+    },
+    'plans': {
+      for (final entry in plans.entries) entry.key: entry.value.toJson(),
+    },
+    'peers': peers.map((p) => p.toJson()).toList(),
+    'myIndex': myIndex,
+  };
 
-  static PrepareSwarmRequestDto fromJson(Map<String, dynamic> map) => PrepareSwarmRequestDto(
+  static PrepareSwarmRequestDto fromJson(Map<String, dynamic> map) =>
+      PrepareSwarmRequestDto(
         info: InfoRegisterDto.fromJson(map['info'] as Map<String, dynamic>),
         sessionId: map['sessionId'] as String,
         files: {
@@ -46,9 +48,13 @@ class PrepareSwarmRequestDto {
         },
         plans: {
           for (final entry in (map['plans'] as Map<String, dynamic>).entries)
-            entry.key: ChunkPlanDto.fromJson(entry.value as Map<String, dynamic>),
+            entry.key: ChunkPlanDto.fromJson(
+              entry.value as Map<String, dynamic>,
+            ),
         },
-        peers: (map['peers'] as List).map((p) => PeerInfo.fromJson(p as Map<String, dynamic>)).toList(),
+        peers: (map['peers'] as List)
+            .map((p) => PeerInfo.fromJson(p as Map<String, dynamic>))
+            .toList(),
         myIndex: map['myIndex'] as int,
       );
 }

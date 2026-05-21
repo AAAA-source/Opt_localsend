@@ -31,9 +31,10 @@ class HttpTargetDiscoveryService {
     // We use the legacy route to make it less breaking for older versions
     final url = ApiRoute.info.targetRaw(ip, port, https, peerProtocolVersion);
     try {
-      final response = await _client.get(uri: url, query: {
-        'fingerprint': _fingerprint,
-      });
+      final response = await _client.get(
+        uri: url,
+        query: {'fingerprint': _fingerprint},
+      );
       final dto = InfoDtoMapper.deserialize(response);
       return dto.toDevice(ip, port, https, HttpDiscovery(ip: ip));
     } catch (e) {

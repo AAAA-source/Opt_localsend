@@ -28,18 +28,18 @@ class BitmapDto {
   }
 
   Map<String, dynamic> toJson() => {
-        'sessionId': sessionId,
-        'fileId': fileId,
-        'totalChunks': totalChunks,
-        'bits': bits,
-      };
+    'sessionId': sessionId,
+    'fileId': fileId,
+    'totalChunks': totalChunks,
+    'bits': bits,
+  };
 
   static BitmapDto fromJson(Map<String, dynamic> map) => BitmapDto(
-        sessionId: map['sessionId'] as String,
-        fileId: map['fileId'] as String,
-        totalChunks: map['totalChunks'] as int,
-        bits: (map['bits'] as List).cast<int>(),
-      );
+    sessionId: map['sessionId'] as String,
+    fileId: map['fileId'] as String,
+    totalChunks: map['totalChunks'] as int,
+    bits: (map['bits'] as List).cast<int>(),
+  );
 
   /// Build an all-zero bitmap of the right byte length for [totalChunks].
   static BitmapDto empty({
