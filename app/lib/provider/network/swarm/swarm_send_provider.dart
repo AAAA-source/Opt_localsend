@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:common/api_route_builder.dart';
@@ -36,6 +37,84 @@ const _altruisticTimeout = Duration(seconds: 5);
 
 /// Per-target concurrency for chunk uploads. Keeping it small avoids HOL blocking.
 const _perTargetConcurrency = 2;
+
+/// ---------------------------------------------------------------------------
+// EWMA-based adaptive chunk scheduler
+// ----------------------------------------------------------------------------
+
+class _PeerPerformance {
+  final String fingerprint;
+  double ewmaThroughput = 0.0; // Bytes/ms
+  bool _isInitialized = false;
+  final double alpha = 0.3; // Smoothing factor, raise it toward 1.0 to react faster to link changes
+
+  _PeerPerformance(this.fingerprint);
+
+  void update(int bytes, int elapsedMs) {
+    final currentMs = max(elapsedMs, 1);
+    final currentThroughput = bytes / currentMs;
+
+    if (!_isInitialized) {
+      ewmaThroughput = currentThroughput;
+      _isInitialized = true;
+    } else {
+      ewmaThroughput = alpha * currentThroughput + (1 - alpha) * ewmaThroughput;
+    }
+  }
+}
+
+class _AdaptiveChunkScheduler {
+  /// Unassigned chunks waiting to be claimed by any peer worker.
+  final List<_ChunkRef> _globalQueue = [];
+
+  /// Chunks that have been claimed but not yet acknowledged. 
+  /// Composite key '$fileId:$chunkIndex' to avoid collisions across multiple files.
+  final Map<String, _ChunkRef> _inflightChunks = {};
+
+  /// Per-peer throughput estimates, keyed by fingerprint.
+  final Map<String, _PeerPerformance> _peers = {};
+
+  _AdaptiveChunkScheduler(List<_ChunkRef> allChunks) {
+    _globalQueue.addAll(allChunks);
+  }
+
+  /// Runtime work-stealing: any peer can call nextChunk() to claim the next available chunk.
+  /// Claims the next available chunk for [fingerprint]
+  /// The fingerprint parameter is retained for future priority ordering
+  /// (e.g. prefer larger chunks for higher throughput peers)
+  _ChunkRef? nextChunk(String fingerprint) {
+    if (_globalQueue.isEmpty) return null;
+    final task = _globalQueue.removeAt(0);
+    _inflightChunks['${task.fileId}:${task.chunkIndex}'] = task;
+    return task;
+  }
+
+  /// Recode a successful ACK from [fingerprint] and update its EWMA estimate.
+  void recordAck(String fingerprint, _ChunkRef task, int bytes, int elapsedMs) {
+    _inflightChunks.remove('${task.fileId}:${task.chunkIndex}');
+    _peers.putIfAbsent(fingerprint, () => _PeerPerformance(fingerprint)).update(bytes, elapsedMs);
+  }
+
+  /// If a chunk is reported as failed by a peer, re-queue it for others to claim.
+  void reportFailure(_ChunkRef task) {
+    final key = '${task.fileId}:${task.chunkIndex}';
+    if (_inflightChunks.containsKey(key)) {
+      _inflightChunks.remove(key);
+      _globalQueue.insert(0, task);
+    }
+  }
+
+  /// Returns the current EWMA throughput estimate for [fingerprint]
+  /// or null if no ACK has been recorded for that peer yet.
+  double? throughputOf(String fingerprint) {
+    final p = _peers[fingerprint];
+    return (p != null && p._isInitialized) ? p.ewmaThroughput : null;
+  }
+
+  /// True when every chunk has been successfully ACKed by some peer.
+  bool isDone => _globalQueue.isEmpty && _inflightChunks.isEmpty;
+}
+
 
 /// Sender-side coordinator for the swarm (HopSwift) transfer.
 ///
@@ -336,36 +415,67 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     final M = acceptedTargets.length;
     final lastAttempt = _lastAttempt[sessionId]!;
 
-    // Worker queues: one queue per target, each performs uploads sequentially up to _perTargetConcurrency.
-    final futures = <Future<void>>[];
-    for (var i = 0; i < acceptedTargets.length; i++) {
-      final target = acceptedTargets[i];
-      final assignedChunks = <_ChunkRef>[];
-      for (final entry in ss.plans.entries) {
-        final plan = entry.value;
-        for (var k = 0; k < plan.totalChunks; k++) {
-          if (k % M == i) {
-            assignedChunks.add(_ChunkRef(fileId: plan.fileId, chunkIndex: k));
-          }
-        }
+    /// Build a global task pool from all chunks across all files. 
+    final allChunks = <_ChunkRef>[];
+    for (final entry in ss.plans.entries) {
+      final plan = entry.value;
+      for (var k = 0; k < plan.totalChunks; k++) {
+        allChunks.add(_ChunkRef(fileId: plan.fileId, chunkIndex: k));
       }
-      _logger.info('Target ${target.alias}: ${assignedChunks.length} primary chunks');
+    }
 
-      // spawn _perTargetConcurrency workers per target.
-      // Dart is single-threaded, so removeAt(0) is safe without an explicit mutex.
+    final scheduler = _AdaptiveChunkScheduler(allChunks);
+    _logger.info('Initilized AdaptiveChunkScheduler with ${allChunks.length} total tasks');
+
+    /// Dynamic heterogeneous chunk planning
+    /// Spawn _perTargetConcurrency workers per peer; all share the same scheduler. 
+    /// This allows parallel uploads without head-of-line (HOL) blocking on slow peers
+    final futures = <Future<void>>[];
+    for (final target in acceptedTargets) {
       for (var w = 0; w < _perTargetConcurrency; w++) {
         futures.add(
           _uploadWorker(
-            sessionId: sessionId,
-            http: http,
-            target: target,
-            queue: assignedChunks,
-            filePaths: filePaths,
-            lastAttempt: lastAttempt,
-          ),
+            sessionId: sessionId, 
+            http: http, 
+            target: target, 
+            scheduler: scheduler, 
+            filePaths: filePaths, 
+            lastAttempt: lastAttempt, 
+          ), 
         );
       }
     }
+
+    /// Simple round-robin assignment
+    // final futures = <Future<void>>[];
+    // for (var i = 0; i < acceptedTargets.length; i++) {
+    //   final target = acceptedTargets[i];
+    //   final assignedChunks = <_ChunkRef>[];
+    //   for (final entry in ss.plans.entries) {
+    //     final plan = entry.value;
+    //     for (var k = 0; k < plan.totalChunks; k++) {
+    //       if (k % M == i) {
+    //         assignedChunks.add(_ChunkRef(fileId: plan.fileId, chunkIndex: k));
+    //       }
+    //     }
+    //   }
+    //   _logger.info('Target ${target.alias}: ${assignedChunks.length} primary chunks');
+
+    //   // spawn _perTargetConcurrency workers per target.
+    //   // Dart is single-threaded, so removeAt(0) is safe without an explicit mutex.
+    //   for (var w = 0; w < _perTargetConcurrency; w++) {
+    //     futures.add(
+    //       _uploadWorker(
+    //         sessionId: sessionId,
+    //         http: http,
+    //         target: target,
+    //         queue: assignedChunks,
+    //         filePaths: filePaths,
+    //         lastAttempt: lastAttempt,
+    //       ),
+    //     );
+    //   }
+    // }
 
     // Altruistic fallback + completion ticker (single loop, runs until all peers full)
     final watcher = _fallbackLoop(
@@ -379,6 +489,12 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
 
     // Wait for all primary uploads to finish first.
     await Future.wait(futures);
+
+    // Primary uploads done — signal the fallback loop to finish after its
+    // current tick, rather than waiting indefinitely for announce packets.
+    final stopper = _stopCompleters[sessionId];
+    if (stopper != null && !stopper.isCompleted) stopper.complete();
+
     // Then wait for the fallback/completion watcher to declare done.
     await watcher;
   }
@@ -387,15 +503,22 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     required String sessionId,
     required SwarmHttpClient http,
     required Device target,
-    required List<_ChunkRef> queue,
+    required _AdaptiveChunkScheduler scheduler, 
     required Map<String, String> filePaths,
     required Map<String, Map<int, DateTime>> lastAttempt,
   }) async {
     while (true) {
-      if (queue.isEmpty) break;
-      final next = queue.removeAt(0);
+      final next = scheduler.nextChunk(target.fingerprint);
+      if (next == null) break; // no more work
+
+      // if (queue.isEmpty) break;
+      // final next = queue.removeAt(0);
+
+      final stopwatch = Stopwatch()..start();
+      int transmittedBytes = 0;
+      
       try {
-        await _uploadChunk(
+        transmittedBytes = await _uploadChunk(
           sessionId: sessionId,
           http: http,
           target: target,
@@ -403,13 +526,25 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
           filePath: filePaths[next.fileId]!,
           lastAttempt: lastAttempt,
         );
+        stopwatch.stop();
+
+        scheduler.recordAck(
+          target.fingerprint,
+          next,
+          transmittedBytes,
+          stopwatch.elapsedMilliseconds,
+        );
       } catch (e, st) {
         _logger.warning('Upload failed for ${target.alias} ${next.fileId}#${next.chunkIndex}', e, st);
+        /// On failure, re-queue the chunk for others to claim.
+        scheduler.reportFailure(next);
+        await Future.delayed(const Duration(milliseconds: 200)); // brief backoff before retrying
       }
     }
   }
 
-  Future<void> _uploadChunk({
+  /// Returns the number of bytes uploaded for this chunk for EWMA calculation
+  Future<int> _uploadChunk({
     required String sessionId,
     required SwarmHttpClient http,
     required Device target,
@@ -418,11 +553,11 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     required Map<String, Map<int, DateTime>> lastAttempt,
   }) async {
     final ss = state[sessionId];
-    if (ss == null) return;
+    if (ss == null) return 0;
     final plan = ss.plans[chunkRef.fileId];
-    if (plan == null) return;
+    if (plan == null) return 0;
     final token = ss.tokens[target.fingerprint]?[chunkRef.fileId];
-    if (token == null) return;
+    if (token == null) return 0;
 
     // Read slice from disk
     final raf = await File(filePath).open();
@@ -460,6 +595,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
         lastChunkSentAt: nowMs,
       );
     });
+    return bytes.length;
   }
 
   /// Periodically scans peer bitmaps; if a chunk's primary upload was issued
