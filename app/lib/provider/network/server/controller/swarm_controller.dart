@@ -283,6 +283,10 @@ class SwarmController {
     // Asynchronously broadcast our new bitmap.
     // ignore: unawaited_futures, discarded_futures
     unawaited(notifier.broadcastBitmap(fileId));
+
+    // Trigger downstream push-to-children relay event after writeChunk confirms success
+    unawaited(notifier.pushToChildren(fileId: fileId, chunkIndex: chunkIndex, bytes: bytes));
+
     await req.respondJson(200);
   }
 

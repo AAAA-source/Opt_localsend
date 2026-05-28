@@ -174,16 +174,45 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
         if (rf.bitmap.has(k)) continue;
         allComplete = false;
 
-        // Find a peer (not me) whose latest bitmap has this chunk.
+        // Topologically aware parent-first routing
         PeerInfo? source;
-        for (final peer in s.peers) {
-          if (peer.fingerprint == _myFingerprint()) continue;
-          final bm = s.peerBitmaps[peer.fingerprint]?[rf.file.id];
-          if (bm != null && bm.has(k)) {
-            source = peer;
-            break;
+        final myPlan = s.relayPlan;
+
+        // 1st priority: try to pull from assigned parent node to respect overlay tree structure
+        if (myPlan != null && myPlan.parentFingerprint != null) {
+          final parentPeer = s.peers.firstWhereOrNull((p) => p.fingerprint == myPlan.parentFingerprint);
+          if (parentPeer != null) {
+            final parentBitmap = s.peerBitmaps[parentPeer.fingerprint]?[rf.file.id];
+            if (parentBitmap != null && parentBitmap.has(k)) {
+              source = parentPeer;
+            }
           }
         }
+
+        // 2nd priority: if parent doesn't have it, fall back to greedy round-robin scanning
+        if (source == null) {
+          for (final peer in s.peers) {
+            if (peer.fingerprint == _myFingerprint()) continue;
+            if (myPlan != null && peer.fingerprint == myPlan.parentFingerprint) continue; // already checked parent
+
+            final bm = s.peerBitmaps[peer.fingerprint]?[rf.file.id];
+            if (bm != null && bm.has(k)) {
+              source = peer;
+              break;
+            }
+          }
+        }
+
+        // Find a peer (not me) whose latest bitmap has this chunk.
+        // PeerInfo? source;
+        // for (final peer in s.peers) {
+        //   if (peer.fingerprint == _myFingerprint()) continue;
+        //   final bm = s.peerBitmaps[peer.fingerprint]?[rf.file.id];
+        //   if (bm != null && bm.has(k)) {
+        //     source = peer;
+        //     break;
+        //   }
+        // }
         if (source == null) continue; // wait for sender or another peer to fill it
         try {
           final url = '${source.https ? 'https' : 'http'}://${source.ip}:${source.port}${ApiRoute.downloadChunk.v3}';
@@ -328,6 +357,63 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     _logger.info(
       'RECVBENCH,${s.sessionId},$totalBytes,$totalChunks,$firstMs,$lastMs,$breakdownStr',
     );
+  }
+
+  /// Active push-to-children relay routing mechanism
+  /// Automatically invoked by SwarmConstroller upon successful file write completion
+  Future<void> pushToChildren({
+    required String fileId, 
+    required int chunkIndex, 
+    required Uint8List bytes, 
+  }) async {
+    final s = state;
+    if (s == null || s.relayPlan == null) return;
+    final myPlan = s.relayPlan!;
+    final client = _client;
+    if (client == null || myPlan.childrenFingerprints.isEmpty) return;
+
+    /// 1. Thread-safe deduplication check: 
+    /// Only push if this chunk is newly acquired from sender or peer
+    final currentPushedSet = s.pushedToChildren[fileId] ?? const <int>{};
+    if (currentPushedSet.contains(chunkIndex)) return; // already pushed this chunk to
+
+    /// 2. State mutation: 
+    /// Update deduplication matrix in-place immediately before issuing requests
+    final updatedPushed = {...s.pushedToChildren};
+    updatedPushed[fileId] = {...currentPushedSet, chunkIndex};
+    state = s.copyWith(pushedToChildren: updatedPushed);
+
+    final pushFutures = <Future<void>>[];
+
+    /// 3. Parallel pipelined dispatches: 
+    /// Route bytes to all registerd child nodes inside the overlay tree
+    for (final childFp in myPlan.childrenFingerprints) {
+      final childPeer = s.peers.firstWhereOrNull((p) => p.fingerprint == childFp);
+      if (childPeer == null) continue; // should not happen
+
+      // Find target's upload verification token associated with this specific file stream
+      final targetFileRecord = s.files[fileId];
+      if (targetFileRecord == null) continue; // should not happen
+
+      final url = '${childPeer.https ? 'https' : 'http'}://${childPeer.ip}:${childPeer.port}${ApiRoute.uploadChunk.v3}';
+      
+      _logger.finest('Tree Routing: Pushing chunk $fileId#$chunkIndex downstream to child node [${childPeer.fingerprint}] at $url');
+      
+      pushFutures.add(client.postBytes(
+        url: url,
+        query: {
+          'sessionId': s.sessionId,
+          'fileId': fileId,
+          'chunkIndex': '$chunkIndex',
+          'token': targetFileRecord.token, // Verification token authorization pass
+        },
+        body: bytes,
+      ).catchError((e) {
+        _logger.fine('push to child ${childPeer.fingerprint} failed: $e');
+      }));
+    }
+    /// Await all parallel push attempts to finish before allowing next batch
+    await Future.wait(pushFutures);
   }
 
   /// Close current session (user or sender cancel).

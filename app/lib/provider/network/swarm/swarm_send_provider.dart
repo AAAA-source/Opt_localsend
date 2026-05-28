@@ -16,9 +16,11 @@ import 'package:common/model/dto/swarm/chunk_plan_dto.dart';
 import 'package:common/model/dto/swarm/peer_info.dart';
 import 'package:common/model/dto/swarm/prepare_swarm_request_dto.dart';
 import 'package:common/model/dto/swarm/prepare_swarm_response_dto.dart';
+import 'package:common/model/dto/swarm/relay_plan_dto.dart';
 import 'package:common/model/file_type.dart';
 import 'package:common/model/session_status.dart';
 import 'package:common/src/task/swarm/chunk_planner.dart';
+import 'package:common/src/task/swarm/relay_planner.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/state/swarm/swarm_send_state.dart';
 import 'package:localsend_app/provider/device_info_provider.dart';
@@ -245,6 +247,16 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       ),
     );
 
+    // Compute bandwidth-aware overlay tree topology
+    final List<PeerBandwidthHint> bwHints = [];
+    final peerFingerprints = targets.map((t) => t.fingerprint).toList();
+    final relayPlanMap = RelayPlanner.computeTree(
+      sessionId: sessionId,
+      peerFingerprints: peerFingerprints,
+      bandwidthHints: bwHints,
+      maxFanOut: _perTargetConcurrency,
+    );
+
     // Phase B: POST prepare-swarm to every target in parallel
     final security = ref.read(securityProvider);
     final http = SwarmHttpClient.create(security);
@@ -279,6 +291,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     for (var i = 0; i < targets.length; i++) {
       final idx = i;
       final t = targets[i];
+      final relayPlan = relayPlanMap[t.fingerprint];
       acceptFutures.add(
         _prepareOnTarget(
               http: http,
@@ -290,6 +303,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
                 plans: plans,
                 peers: peers,
                 myIndex: idx,
+                relayPlan: relayPlan,
               ),
             )
             .then((tokensForTarget) {
@@ -427,11 +441,19 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     final scheduler = _AdaptiveChunkScheduler(allChunks);
     _logger.info('Initilized AdaptiveChunkScheduler with ${allChunks.length} total tasks');
 
+    /// Filter and only upload to primary relay nodes
+    /// Senders only feeds parents instead of dispatching to all targets
+    final primaryRelayTargets = acceptedTargets.where((target) {
+      final peerPlan = relayPlanMap[target.fingerprint];
+      return peerPlan != null && peerPlan.parentFingerprint == null;
+    }).toList();
+    _logger.info('Overlay tree filters active: feeding ${primaryRelayTargets.length}/${acceptedTargets.length} root targets directly');
+    
     /// Dynamic heterogeneous chunk planning
     /// Spawn _perTargetConcurrency workers per peer; all share the same scheduler. 
     /// This allows parallel uploads without head-of-line (HOL) blocking on slow peers
     final futures = <Future<void>>[];
-    for (final target in acceptedTargets) {
+    for (final target in primaryRelayTargets) {
       for (var w = 0; w < _perTargetConcurrency; w++) {
         futures.add(
           _uploadWorker(

@@ -6,6 +6,7 @@ import 'package:common/model/dto/file_dto.dart';
 import 'package:common/model/dto/swarm/bitmap_dto.dart';
 import 'package:common/model/dto/swarm/chunk_plan_dto.dart';
 import 'package:common/model/dto/swarm/peer_info.dart';
+import 'package:common/model/dto/swarm/relay_plan_dto.dart';
 import 'package:common/model/session_status.dart';
 
 /// Per-file runtime state on the receiver side of a swarm session.
@@ -74,6 +75,12 @@ class SwarmReceiveState {
   final int? firstChunkReceivedAt;
   final int? lastChunkReceivedAt;
 
+  final RelayPlanDto? relayPlan; // optional per-peer topology assignment
+
+  /// Map key: fileId, value: 
+  /// Set of chunk indices already pushed to children
+  final Map<String, Set<int>> pushedToChildren;
+
   const SwarmReceiveState({
     required this.sessionId,
     required this.status,
@@ -92,6 +99,8 @@ class SwarmReceiveState {
     required this.errorMessage,
     this.firstChunkReceivedAt,
     this.lastChunkReceivedAt,
+    this.relayPlan,
+    this.pushedToChildren = const {},
   });
 
   SwarmReceiveState copyWith({
@@ -105,6 +114,8 @@ class SwarmReceiveState {
     String? errorMessage,
     int? firstChunkReceivedAt,
     int? lastChunkReceivedAt,
+    RelayPlanDto? relayPlan,
+    Map<String, Set<int>>? pushedToChildren,
   }) {
     return SwarmReceiveState(
       sessionId: sessionId,
@@ -124,6 +135,8 @@ class SwarmReceiveState {
       errorMessage: errorMessage ?? this.errorMessage,
       firstChunkReceivedAt: firstChunkReceivedAt ?? this.firstChunkReceivedAt,
       lastChunkReceivedAt: lastChunkReceivedAt ?? this.lastChunkReceivedAt,
+      relayPlan: relayPlan ?? this.relayPlan,
+      pushedToChildren: pushedToChildren ?? this.pushedToChildren,
     );
   }
 
