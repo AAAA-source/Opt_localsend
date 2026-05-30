@@ -114,7 +114,7 @@ class _AdaptiveChunkScheduler {
   }
 
   /// True when every chunk has been successfully ACKed by some peer.
-  bool isDone => _globalQueue.isEmpty && _inflightChunks.isEmpty;
+  bool get isDone => _globalQueue.isEmpty && _inflightChunks.isEmpty;
 }
 
 
@@ -354,6 +354,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       acceptedTargets: acceptedTargets,
       filePaths: filePaths,
       stop: stop,
+      relayPlanMap: relayPlanMap, 
     );
 
     final endMs = DateTime.now().millisecondsSinceEpoch;
@@ -423,6 +424,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     required List<Device> acceptedTargets,
     required Map<String, String> filePaths,
     required Completer<void> stop,
+    required Map<String, RelayPlanDto> relayPlanMap,
   }) async {
     final ss = state[sessionId];
     if (ss == null) return;

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:collection/collection.dart';
 import 'package:common/api_route_builder.dart';
 import 'package:common/model/dto/swarm/announce_dto.dart';
 import 'package:common/model/dto/swarm/peer_info.dart';
@@ -407,7 +408,7 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
           'chunkIndex': '$chunkIndex',
           'token': targetFileRecord.token, // Verification token authorization pass
         },
-        body: bytes,
+        bytes: bytes,
       ).catchError((e) {
         _logger.fine('push to child ${childPeer.fingerprint} failed: $e');
       }));
