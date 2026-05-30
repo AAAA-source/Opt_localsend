@@ -5,7 +5,6 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   bitsdojo_window_linux
   desktop_drop
-  dynamic_color
   file_selector_linux
   gtk
   open_dir_linux
