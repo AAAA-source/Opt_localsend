@@ -210,7 +210,7 @@ final sendTabVmProvider = ViewProvider((ref) {
         await context.pushBottomSheet(() => const NoFilesDialog());
         return;
       }
-      final targets = ref.read(nearbyDevicesProvider).allDevices.values.toList();
+      final targets = ref.read(nearbyDevicesProvider).allDevices.values.where((d) => d.ip != null).toList();
       if (targets.isEmpty) {
         return;
       }
@@ -232,7 +232,7 @@ final sendTabVmProvider = ViewProvider((ref) {
         await context.pushBottomSheet(() => const NoFilesDialog());
         return;
       }
-      final targets = ref.read(nearbyDevicesProvider).allDevices.values.toList();
+      final targets = ref.read(nearbyDevicesProvider).allDevices.values.where((d) => d.ip != null).toList();
       if (targets.length < 2) return;
       await context.push(() => const BenchmarkPage());
     },
