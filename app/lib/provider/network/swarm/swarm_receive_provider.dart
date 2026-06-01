@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:collection/collection.dart';
 import 'package:common/api_route_builder.dart';
 import 'package:common/model/dto/swarm/announce_dto.dart';
+import 'package:common/model/dto/swarm/bitmap_dto.dart';
 import 'package:common/model/dto/swarm/peer_info.dart';
 import 'package:common/model/file_status.dart';
 import 'package:common/model/session_status.dart';
@@ -14,6 +15,7 @@ import 'package:localsend_app/model/state/swarm/swarm_receive_state.dart';
 import 'package:localsend_app/provider/network/swarm/swarm_http_client.dart';
 import 'package:localsend_app/provider/security_provider.dart';
 import 'package:localsend_app/util/native/file_saver.dart';
+import 'package:localsend_app/util/native/raf_pool.dart';
 import 'package:logging/logging.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 
@@ -31,8 +33,57 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
   // Track which sources contributed which chunk indices, used for the UI breakdown.
   final Map<String, Map<int, String>> _chunkSource = {}; // fileId -> idx -> source label
 
+  // --- Phase 1: throttled UI notification --------------------------------
+  // Chunk data (bitmap bits) is mutated in place; we only need to *notify*
+  // listeners. Doing a copyWith per chunk is O(files) per write → O(N²) for
+  // many small files. Instead we coalesce notifications to ~10 Hz.
+  Timer? _uiFlushTimer;
+  static const _uiFlushInterval = Duration(milliseconds: 100);
+  int? _firstChunkReceivedAt;
+  int? _lastChunkReceivedAt;
+
+  // --- Phase 2: coalesced bitmap announces -------------------------------
+  // Per-chunk broadcastBitmap() POSTed one file's bitmap to sender + every
+  // peer. With N small files that is N·M serialized POSTs. We mark files dirty
+  // and flush all of them in a single multi-bitmap AnnounceDto per target.
+  final Set<String> _dirtyBitmaps = {};
+  Timer? _broadcastTimer;
+  static const _broadcastInterval = Duration(milliseconds: 250);
+
+  // --- Phase 1: relay-push dedup kept off the UI state -------------------
+  // fileId -> set of chunk indices already pushed to children. Read only by
+  // pushToChildren(); no reason to round-trip it through Riverpod state.
+  final Map<String, Set<int>> _pushedToChildren = {};
+
+  // --- Phase 3: bounded RAF lifecycle ------------------------------------
+  // We no longer open a descriptor for every file up front (that exhausts fds
+  // for a folder of thousands of files). Instead each file's write handle is
+  // opened lazily on its first chunk and closed the moment it is complete; the
+  // FileMode.write handle (O_RDWR) also serves relay reads while open. Once a
+  // file is closed, relay reads of it go through a bounded read pool.
+  final Map<String, RandomAccessFile> _writeRafs = {}; // fileId -> open write handle
+  final Map<String, int> _recvCount = {}; // fileId -> unique chunks written
+  final Map<String, Future<void>> _fileLocks = {}; // fileId -> serialization lock
+  final RafReadPool _relayReadPool = RafReadPool();
+
   @override
   SwarmReceiveState? init() => null;
+
+  /// Serializes seek+read/write on a single file's handle so concurrent chunk
+  /// writes and relay reads don't clobber each other's position.
+  Future<T> _withFileLock<T>(String fileId, Future<T> Function() fn) async {
+    final prev = _fileLocks[fileId] ?? Future<void>.value();
+    final completer = Completer<void>();
+    _fileLocks[fileId] = completer.future;
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      completer.complete();
+      // Awaiting the already-complete future just discards it cleanly.
+      if (identical(_fileLocks[fileId], completer.future)) await _fileLocks.remove(fileId);
+    }
+  }
 
   bool get hasActiveSession {
     final s = state;
@@ -42,7 +93,40 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
 
   /// Replaces the current swarm session. Caller must guarantee no active session.
   void setSession(SwarmReceiveState s) {
+    // Reset throttle/announce bookkeeping for the fresh session.
+    _uiFlushTimer?.cancel();
+    _uiFlushTimer = null;
+    _broadcastTimer?.cancel();
+    _broadcastTimer = null;
+    _dirtyBitmaps.clear();
+    _pushedToChildren.clear();
+    _writeRafs.clear();
+    _recvCount.clear();
+    _fileLocks.clear();
+    _firstChunkReceivedAt = null;
+    _lastChunkReceivedAt = null;
     state = s;
+  }
+
+  // --- Phase 1: throttled UI flush ---------------------------------------
+  void _scheduleUiFlush() {
+    if (_uiFlushTimer != null) return;
+    _uiFlushTimer = Timer(_uiFlushInterval, () {
+      _uiFlushTimer = null;
+      _flushUiNow();
+    });
+  }
+
+  /// Publishes a fresh state snapshot so progress widgets rebuild. Bitmaps are
+  /// already up to date (mutated in place); this only triggers notification.
+  void _flushUiNow() {
+    final s = state;
+    if (s == null) return;
+    state = s.copyWith(
+      files: {...s.files},
+      firstChunkReceivedAt: _firstChunkReceivedAt,
+      lastChunkReceivedAt: _lastChunkReceivedAt,
+    );
   }
 
   void mutate(SwarmReceiveState Function(SwarmReceiveState s) f) {
@@ -66,7 +150,9 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     if (s == null) return;
     final byPeer = {...s.peerBitmaps};
     final perFile = {...?byPeer[announce.fingerprint]};
-    perFile[announce.bitmap.fileId] = announce.bitmap;
+    for (final bm in announce.bitmaps) {
+      perFile[bm.fileId] = bm;
+    }
     byPeer[announce.fingerprint] = perFile;
     state = s.copyWith(peerBitmaps: byPeer);
   }
@@ -90,31 +176,66 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
       _logger.warning('Hash mismatch ${rf.file.fileName}#$chunkIndex from $source');
       return false;
     }
-    final raf = rf.raf;
-    if (raf == null) {
-      _logger.warning('No open RAF for ${rf.file.fileName}');
-      return false;
-    }
-    try {
-      await raf.setPosition(rf.plan.chunkOffset(chunkIndex));
-      await raf.writeFrom(bytes);
-    } catch (e, st) {
-      _logger.severe('Write failed at $fileId#$chunkIndex', e, st);
-      return false;
-    }
-    // Update bitmap in-place
-    final byte = chunkIndex >> 3;
-    rf.bitmap.bits[byte] |= (1 << (chunkIndex & 7));
-    rf.chunksFromSource[source] = (rf.chunksFromSource[source] ?? 0) + 1;
-    (_chunkSource[fileId] ??= {})[chunkIndex] = source;
-    // Notify listeners with a fresh state snapshot + timing.
+    final ok = await _withFileLock(fileId, () async {
+      // Re-check under the lock: a concurrent writer may have just landed it.
+      if (rf.bitmap.has(chunkIndex)) return true;
+      final RandomAccessFile raf;
+      try {
+        raf = await _openWriteRaf(rf);
+      } catch (e, st) {
+        _logger.severe('Open write handle failed for ${rf.file.fileName}', e, st);
+        return false;
+      }
+      try {
+        await raf.setPosition(rf.plan.chunkOffset(chunkIndex));
+        await raf.writeFrom(bytes);
+      } catch (e, st) {
+        _logger.severe('Write failed at $fileId#$chunkIndex', e, st);
+        return false;
+      }
+      // Update bitmap in-place
+      final byte = chunkIndex >> 3;
+      rf.bitmap.bits[byte] |= (1 << (chunkIndex & 7));
+      rf.chunksFromSource[source] = (rf.chunksFromSource[source] ?? 0) + 1;
+      (_chunkSource[fileId] ??= {})[chunkIndex] = source;
+      // Close the write handle the moment the file is complete, so the open-fd
+      // count tracks the in-progress working set, not the total file count.
+      final count = (_recvCount[fileId] = (_recvCount[fileId] ?? 0) + 1);
+      if (count >= rf.plan.totalChunks) {
+        final w = _writeRafs.remove(fileId);
+        try {
+          await w?.flush();
+          await w?.close();
+        } catch (_) {}
+      }
+      return true;
+    });
+    if (!ok) return false;
+    // Record timing in plain fields and notify the UI on a throttled tick
+    // instead of copying the whole files map per chunk.
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    state = s.copyWith(
-      files: {...s.files},
-      firstChunkReceivedAt: s.firstChunkReceivedAt ?? nowMs,
-      lastChunkReceivedAt: nowMs,
-    );
+    _firstChunkReceivedAt ??= nowMs;
+    _lastChunkReceivedAt = nowMs;
+    _scheduleUiFlush();
     return true;
+  }
+
+  /// Lazily opens (and preallocates) the write handle for [rf], reusing it for
+  /// the life of the incomplete file. FileMode.write is O_RDWR, so the same
+  /// handle also serves relay reads while the file is being written.
+  Future<RandomAccessFile> _openWriteRaf(SwarmReceivingFile rf) async {
+    final existing = _writeRafs[rf.file.id];
+    if (existing != null) return existing;
+    final path = rf.path;
+    if (path == null) {
+      throw StateError('No destination path for ${rf.file.fileName}');
+    }
+    final raf = await File(path).open(mode: FileMode.write);
+    if (rf.file.size > 0) {
+      await raf.truncate(rf.file.size);
+    }
+    _writeRafs[rf.file.id] = raf;
+    return raf;
   }
 
   /// Returns the bytes of a chunk we already hold (peer→peer GET).
@@ -124,13 +245,22 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     final rf = s.files[fileId];
     if (rf == null) return null;
     if (!rf.bitmap.has(chunkIndex)) return null;
-    final raf = rf.raf;
-    if (raf == null) return null;
-    await raf.setPosition(rf.plan.chunkOffset(chunkIndex));
+    final path = rf.path;
+    if (path == null) return null;
+    final offset = rf.plan.chunkOffset(chunkIndex);
     final n = rf.plan.chunkLength(chunkIndex);
-    final out = await raf.read(n);
-    if (out.length != n) return null;
-    return out;
+    return _withFileLock(fileId, () async {
+      final w = _writeRafs[fileId];
+      if (w != null) {
+        // File still being written; read from the same O_RDWR handle.
+        await w.setPosition(offset);
+        final out = await w.read(n);
+        return out.length == n ? out : null;
+      }
+      // File complete and closed; read through the bounded read pool.
+      final out = await _relayReadPool.read(path, offset, n);
+      return out.length == n ? out : null;
+    });
   }
 
   /// Spawns the peer-pull worker; runs until all chunks of all files held locally.
@@ -233,7 +363,7 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
             source: source.fingerprint,
           );
           if (ok) {
-            await broadcastBitmap(rf.file.id);
+            markBitmapDirty(rf.file.id);
           }
         } catch (e) {
           // _logger.fine('peer pull failed ${rf.file.id}#$k from ${source.alias}: $e');
@@ -259,82 +389,99 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     }
   }
 
+  /// Marks every file dirty and flushes immediately so the swarm learns we are
+  /// here (even with empty bitmaps) at session start.
   Future<void> _broadcastAllBitmaps() async {
     final s = state;
     if (s == null) return;
     for (final rf in s.files.values) {
-      await broadcastBitmap(rf.file.id);
+      _dirtyBitmaps.add(rf.file.id);
     }
+    await _flushBitmapBroadcasts();
   }
 
-  Future<void> broadcastBitmap(String fileId) async {
+  /// Phase 2: marks [fileId]'s bitmap dirty and schedules a coalesced flush.
+  /// Replaces the old per-chunk broadcastBitmap() so N files collapse into one
+  /// multi-bitmap announce per target.
+  void markBitmapDirty(String fileId) {
+    _dirtyBitmaps.add(fileId);
+    if (_broadcastTimer != null) return;
+    _broadcastTimer = Timer(_broadcastInterval, () {
+      _broadcastTimer = null;
+      // ignore: discarded_futures
+      _flushBitmapBroadcasts();
+    });
+  }
+
+  /// Sends the current bitmaps of all dirty files as a single AnnounceDto to
+  /// the sender + every other peer, with the per-target POSTs issued in
+  /// parallel.
+  Future<void> _flushBitmapBroadcasts() async {
     final s = state;
     if (s == null) return;
-    final rf = s.files[fileId];
-    if (rf == null) return;
-    final me = _myFingerprint();
-    if (me == null) return;
-    final announce = AnnounceDto(fingerprint: me, bitmap: rf.bitmap);
-    final body = announce.toJson();
-    // POST to sender + every other peer.
-    final targets = <_AnnounceTarget>[
-      _AnnounceTarget(ip: s.sender.ip ?? '', port: s.sender.port, https: s.sender.https),
-      ...[
-        for (final peer in s.peers)
-          if (peer.fingerprint != me) _AnnounceTarget(ip: peer.ip, port: peer.port, https: peer.https),
-      ],
-    ];
     final client = _client;
     if (client == null) return;
-    for (final t in targets) {
-      if (t.ip.isEmpty) continue;
-      final url = '${t.https ? 'https' : 'http'}://${t.ip}:${t.port}${ApiRoute.announce.v3}';
-      try {
-        await client.postJson(
-          url: url,
-          query: {'sessionId': s.sessionId},
-          body: body,
-        );
-      } catch (e) {
-        _logger.fine('announce to ${t.ip} failed: $e');
-      }
-    }
+    final me = _myFingerprint();
+    if (me == null) return;
+    if (_dirtyBitmaps.isEmpty) return;
+    final dirty = _dirtyBitmaps.toList();
+    _dirtyBitmaps.clear();
+    final bitmaps = <BitmapDto>[
+      for (final fid in dirty)
+        if (s.files[fid] != null) s.files[fid]!.bitmap,
+    ];
+    if (bitmaps.isEmpty) return;
+    final body = AnnounceDto(fingerprint: me, bitmaps: bitmaps).toJson();
+    // POST to sender + every other peer, concurrently.
+    final targets = <_AnnounceTarget>[
+      _AnnounceTarget(ip: s.sender.ip ?? '', port: s.sender.port, https: s.sender.https),
+      for (final peer in s.peers)
+        if (peer.fingerprint != me) _AnnounceTarget(ip: peer.ip, port: peer.port, https: peer.https),
+    ];
+    await Future.wait([
+      for (final t in targets)
+        if (t.ip.isNotEmpty)
+          client
+              .postJson(
+                url: '${t.https ? 'https' : 'http'}://${t.ip}:${t.port}${ApiRoute.announce.v3}',
+                query: {'sessionId': s.sessionId},
+                body: body,
+              )
+              .catchError((Object e) {
+                _logger.fine('announce to ${t.ip} failed: $e');
+                return '';
+              }),
+    ]);
   }
 
   Future<void> _finishAndVerify() async {
     final s = state;
     if (s == null) return;
     final files = {...s.files};
-    for (final entry in files.entries) {
-      final rf = entry.value;
+    // Phase 4: no redundant full-file re-read. Every chunk was SHA256-verified
+    // against plan.sha256PerChunk at write time, and we only reach here once the
+    // bitmap is fully set (all chunks present), so the chunk set provably covers
+    // the whole file and the file is already intact.
+    // Phase 3: flush/close any write handles still open (most were closed on
+    // completion) and drop pooled relay-read descriptors.
+    for (final fileId in _writeRafs.keys.toList()) {
+      final w = _writeRafs.remove(fileId);
       try {
-        await rf.raf?.flush();
+        await w?.flush();
+        await w?.close();
       } catch (e) {
-        _logger.warning('flush failed for ${rf.file.fileName}: $e');
+        _logger.warning('flush/close failed for $fileId: $e');
       }
-      try {
-        // Verify full-file hash
-        if (rf.path != null) {
-          final f = File(rf.path!);
-          final actual = await sha256.bind(f.openRead()).first;
-          if (actual.toString() != rf.plan.fileSha256) {
-            files[entry.key] = rf.copyWith(errorMessage: 'SHA256 mismatch on full file');
-          }
-        }
-      } catch (e, st) {
-        _logger.warning('verify failed for ${rf.file.fileName}', e, st);
-        files[entry.key] = rf.copyWith(errorMessage: 'verify error: $e');
-      }
-      try {
-        await rf.raf?.close();
-      } catch (_) {}
     }
+    await _relayReadPool.closeAll();
     final anyError = files.values.any((f) => f.errorMessage != null);
     final endMs = DateTime.now().millisecondsSinceEpoch;
     state = s.copyWith(
       status: anyError ? SessionStatus.finishedWithErrors : SessionStatus.finished,
       endTime: endMs,
       files: files,
+      firstChunkReceivedAt: _firstChunkReceivedAt,
+      lastChunkReceivedAt: _lastChunkReceivedAt,
     );
     _emitReceiverBenchmarkLog(state!);
     _logger.info('Swarm receive session ${s.sessionId} ${anyError ? 'finishedWithErrors' : 'finished'}');
@@ -373,16 +520,13 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     final client = _client;
     if (client == null || myPlan.childrenFingerprints.isEmpty) return;
 
-    /// 1. Thread-safe deduplication check: 
+    /// 1. Deduplication check (kept in a plain notifier field, not UI state):
     /// Only push if this chunk is newly acquired from sender or peer
-    final currentPushedSet = s.pushedToChildren[fileId] ?? const <int>{};
-    if (currentPushedSet.contains(chunkIndex)) return; // already pushed this chunk to
+    final currentPushedSet = _pushedToChildren[fileId] ??= <int>{};
+    if (currentPushedSet.contains(chunkIndex)) return; // already pushed this chunk
 
-    /// 2. State mutation: 
-    /// Update deduplication matrix in-place immediately before issuing requests
-    final updatedPushed = {...s.pushedToChildren};
-    updatedPushed[fileId] = {...currentPushedSet, chunkIndex};
-    state = s.copyWith(pushedToChildren: updatedPushed);
+    /// 2. Mark as pushed in-place before issuing requests.
+    currentPushedSet.add(chunkIndex);
 
     final pushFutures = <Future<void>>[];
 
@@ -420,14 +564,21 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
   /// Close current session (user or sender cancel).
   Future<void> closeSession() async {
     _pullStop?.complete();
-    final s = state;
-    if (s != null) {
-      for (final rf in s.files.values) {
-        try {
-          await rf.raf?.close();
-        } catch (_) {}
-      }
+    _uiFlushTimer?.cancel();
+    _uiFlushTimer = null;
+    _broadcastTimer?.cancel();
+    _broadcastTimer = null;
+    _dirtyBitmaps.clear();
+    _pushedToChildren.clear();
+    for (final fileId in _writeRafs.keys.toList()) {
+      final w = _writeRafs.remove(fileId);
+      try {
+        await w?.close();
+      } catch (_) {}
     }
+    await _relayReadPool.closeAll();
+    _recvCount.clear();
+    _fileLocks.clear();
     _client?.dispose();
     _client = null;
     state = null;
@@ -442,26 +593,27 @@ class _AnnounceTarget {
   const _AnnounceTarget({required this.ip, required this.port, required this.https});
 }
 
-/// Helper exported for the v3 controller — opens/creates the destination file
-/// and returns the absolute path + open [RandomAccessFile].
-Future<(String path, RandomAccessFile raf)> openDestinationFile({
+/// Helper exported for the v3 controller — resolves a unique destination path
+/// and reserves the name (so concurrent files don't collide) WITHOUT holding an
+/// open descriptor. The actual write handle is opened lazily on the first chunk
+/// (see [SwarmReceiveNotifier._openWriteRaf]), keeping the open-fd count bounded
+/// for sessions with thousands of small files.
+Future<String> reserveDestinationPath({
   required String destinationDirectory,
   required String fileName,
   required Set<String> createdDirectories,
-  required int finalSize,
 }) async {
   final (path, _, _) = await digestFilePathAndPrepareDirectory(
     parentDirectory: destinationDirectory,
     fileName: fileName,
     createdDirectories: createdDirectories,
   );
-  final file = File(path);
-  // Pre-allocate the full size so offset writes don't expand the file repeatedly.
-  final raf = await file.open(mode: FileMode.write);
-  if (finalSize > 0) {
-    await raf.truncate(finalSize);
-  }
-  return (path, raf);
+  // Touch the file to reserve the name; the lazy write handle truncates and
+  // preallocates it on first use.
+  try {
+    await File(path).create(recursive: true);
+  } catch (_) {}
+  return path;
 }
 
 /// FileStatus extension used by the UI: collapse swarm bitmap to FileStatus

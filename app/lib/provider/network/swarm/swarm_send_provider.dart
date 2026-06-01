@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:common/api_route_builder.dart';
 import 'package:common/constants.dart';
@@ -27,6 +25,7 @@ import 'package:localsend_app/provider/device_info_provider.dart';
 import 'package:localsend_app/provider/network/swarm/swarm_http_client.dart';
 import 'package:localsend_app/provider/security_provider.dart';
 import 'package:localsend_app/provider/settings_provider.dart';
+import 'package:localsend_app/util/native/raf_pool.dart';
 import 'package:logging/logging.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -143,8 +142,39 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
   /// Per-session controller used to stop the fallback loop.
   final Map<String, Completer<void>> _stopCompleters = {};
 
+  /// Per-session pooled read handles (Phase 3): avoids re-opening the file on
+  /// every chunk read.
+  final Map<String, RafReadPool> _readPools = {};
+
+  // --- Phase 1: throttled UI notification --------------------------------
+  // sentToPrimary sets are mutated in place; we only coalesce the Riverpod
+  // notification to ~10 Hz instead of copying the set map per chunk.
+  static const _uiFlushInterval = Duration(milliseconds: 100);
+  final Set<String> _uiFlushScheduled = {};
+  final Map<String, int> _firstChunkSentAt = {};
+  final Map<String, int> _lastChunkSentAt = {};
+
   @override
   Map<String, SwarmSendState> init() => {};
+
+  /// Phase 1: schedule a coalesced UI flush that publishes the latest send
+  /// timing. sentToPrimary is already mutated in place, so this only triggers
+  /// notification.
+  void _scheduleSenderUiFlush(String sessionId) {
+    if (_uiFlushScheduled.contains(sessionId)) return;
+    _uiFlushScheduled.add(sessionId);
+    Timer(_uiFlushInterval, () {
+      _uiFlushScheduled.remove(sessionId);
+      if (state[sessionId] == null) return;
+      state = _patch(
+        sessionId,
+        (s) => s.copyWith(
+          firstChunkSentAt: _firstChunkSentAt[sessionId],
+          lastChunkSentAt: _lastChunkSentAt[sessionId],
+        ),
+      );
+    });
+  }
 
   /// Starts a swarm session and returns its id. The id is registered into
   /// [state] synchronously before any awaits, so callers can read it
@@ -369,6 +399,8 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
         status: SessionStatus.finished,
         endTime: endMs,
         peerCompleteTime: pct,
+        firstChunkSentAt: _firstChunkSentAt[sessionId],
+        lastChunkSentAt: _lastChunkSentAt[sessionId],
       );
     });
     _emitSenderBenchmarkLog(sessionId);
@@ -415,7 +447,9 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
   void onAnnounce({required String sessionId, required AnnounceDto dto}) {
     final byPeer = _peerBitmaps[sessionId] ??= {};
     final byFile = byPeer[dto.fingerprint] ??= {};
-    byFile[dto.bitmap.fileId] = dto.bitmap;
+    for (final bm in dto.bitmaps) {
+      byFile[bm.fileId] = bm;
+    }
   }
 
   Future<void> _dispatchAndWatch({
@@ -428,7 +462,6 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
   }) async {
     final ss = state[sessionId];
     if (ss == null) return;
-    final M = acceptedTargets.length;
     final lastAttempt = _lastAttempt[sessionId]!;
 
     /// Build a global task pool from all chunks across all files. 
@@ -583,18 +616,12 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     final token = ss.tokens[target.fingerprint]?[chunkRef.fileId];
     if (token == null) return 0;
 
-    // Read slice from disk
-    final raf = await File(filePath).open();
-    Uint8List bytes;
-    try {
-      await raf.setPosition(plan.chunkOffset(chunkRef.chunkIndex));
-      final length = plan.chunkLength(chunkRef.chunkIndex);
-      bytes = await raf.read(length);
-      if (bytes.length != length) {
-        throw StateError('Short read at chunk ${chunkRef.chunkIndex}');
-      }
-    } finally {
-      await raf.close();
+    // Read slice from disk via the pooled read handle (no per-chunk open/close).
+    final length = plan.chunkLength(chunkRef.chunkIndex);
+    final pool = _readPools[sessionId] ??= RafReadPool();
+    final bytes = await pool.read(filePath, plan.chunkOffset(chunkRef.chunkIndex), length);
+    if (bytes.length != length) {
+      throw StateError('Short read at chunk ${chunkRef.chunkIndex}');
     }
 
     final url = '${target.https ? 'https' : 'http'}://${target.ip}:${target.port}${ApiRoute.uploadChunk.v3}';
@@ -609,16 +636,13 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       bytes: bytes,
     );
     (lastAttempt[chunkRef.fileId] ??= {})[chunkRef.chunkIndex] = DateTime.now();
-    state = _patch(sessionId, (s) {
-      final next = {...s.sentToPrimary};
-      next[chunkRef.fileId] = {...(next[chunkRef.fileId] ?? const <int>{}), chunkRef.chunkIndex};
-      final nowMs = DateTime.now().millisecondsSinceEpoch;
-      return s.copyWith(
-        sentToPrimary: next,
-        firstChunkSentAt: s.firstChunkSentAt ?? nowMs,
-        lastChunkSentAt: nowMs,
-      );
-    });
+    // Mark this chunk sent in place (set reference is stable across copyWith)
+    // and notify the UI on a throttled tick instead of copying the map.
+    (ss.sentToPrimary[chunkRef.fileId] ??= <int>{}).add(chunkRef.chunkIndex);
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    _firstChunkSentAt[sessionId] ??= nowMs;
+    _lastChunkSentAt[sessionId] = nowMs;
+    _scheduleSenderUiFlush(sessionId);
     return bytes.length;
   }
 
@@ -779,6 +803,11 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     _stopCompleters.remove(sessionId)?.complete();
     _peerBitmaps.remove(sessionId);
     _lastAttempt.remove(sessionId);
+    _uiFlushScheduled.remove(sessionId);
+    _firstChunkSentAt.remove(sessionId);
+    _lastChunkSentAt.remove(sessionId);
+    // ignore: discarded_futures
+    unawaited(_readPools.remove(sessionId)?.closeAll() ?? Future<void>.value());
     state = {...state}..remove(sessionId);
   }
 }

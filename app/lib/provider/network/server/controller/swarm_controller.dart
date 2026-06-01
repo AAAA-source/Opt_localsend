@@ -161,7 +161,8 @@ class SwarmController {
       return;
     }
 
-    // Open files for offset writes
+    // Reserve destination paths (write handles are opened lazily per file on
+    // their first chunk; see RafPool / _openWriteRaf).
     final updatedFiles = <String, SwarmReceivingFile>{};
     final tokens = <String, String>{};
     for (final entry in selection.entries) {
@@ -170,16 +171,15 @@ class SwarmController {
       final existing = provisionalFiles[fileId];
       if (existing == null) continue;
       try {
-        final (path, raf) = await openDestinationFile(
+        final path = await reserveDestinationPath(
           destinationDirectory: destinationDir,
           fileName: desiredName,
           createdDirectories: notifier.state!.createdDirectories,
-          finalSize: existing.file.size,
         );
-        updatedFiles[fileId] = existing.copyWith(path: path, raf: raf);
+        updatedFiles[fileId] = existing.copyWith(path: path);
         tokens[fileId] = existing.token;
       } catch (e, st) {
-        _logger.severe('Failed to open destination for $desiredName', e, st);
+        _logger.severe('Failed to reserve destination for $desiredName', e, st);
       }
     }
     notifier.mutate(
@@ -280,9 +280,8 @@ class SwarmController {
       await req.respondJson(400, message: 'Chunk rejected (hash/write failure)');
       return;
     }
-    // Asynchronously broadcast our new bitmap.
-    // ignore: unawaited_futures, discarded_futures
-    unawaited(notifier.broadcastBitmap(fileId));
+    // Mark our bitmap dirty; a coalesced flush announces it to the swarm.
+    notifier.markBitmapDirty(fileId);
 
     // Trigger downstream push-to-children relay event after writeChunk confirms success
     unawaited(notifier.pushToChildren(fileId: fileId, chunkIndex: chunkIndex, bytes: bytes));
