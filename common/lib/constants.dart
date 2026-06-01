@@ -18,6 +18,14 @@ const swarmProtocolVersion = '3.0';
 /// Sender splits each file into fixed-size chunks (last chunk may be smaller).
 const defaultChunkSize = 4 * 1024 * 1024;
 
+/// Swarm small-file bundling (Direction A). Files smaller than the chunk size
+/// are concatenated into bundle units so a folder of many small files becomes a
+/// handful of chunk requests instead of one request per file. Bundles are
+/// capped so a single manifest/unit stays reasonable and the relay tree can
+/// balance load across several bundles.
+const bundleMaxBytes = 64 * 1024 * 1024; // ≤ 64 MiB of payload per bundle
+const bundleMaxEntries = 1024; // ≤ 1024 member files per bundle
+
 /// Assumed protocol version of peers for first handshake.
 /// Generally this should be slightly lower than the current protocol version.
 const peerProtocolVersion = '1.0';

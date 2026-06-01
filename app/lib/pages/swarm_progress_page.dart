@@ -170,28 +170,34 @@ class _ReceiverBody extends StatelessWidget {
           subtitle: '${receivedBytes.asReadableFileSize} / ${totalBytes.asReadableFileSize}',
         ),
         const SizedBox(height: 12),
-        Text('Files (${state.files.length})', style: Theme.of(context).textTheme.titleMedium),
+        Text(
+          'Files (${state.files.values.fold<int>(0, (a, u) => a + u.members.length)})',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
         const SizedBox(height: 6),
-        ...state.files.values.map((rf) {
-          final filePct = rf.plan.totalChunks == 0 ? 0.0 : rf.bitmap.receivedCount / rf.plan.totalChunks;
+        // Expand each unit back into its original member files (bundles → files)
+        // and derive per-file progress from the unit bitmap.
+        ...state.files.values.expand((unit) => unit.members.map((m) {
+          final received = state.receivedBytesOfMember(unit, m);
+          final filePct = m.size == 0 ? 1.0 : received / m.size;
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(rf.file.fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(m.fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
                 const SizedBox(height: 4),
-                CustomProgressBar(progress: filePct, borderRadius: 4),
+                CustomProgressBar(progress: filePct.clamp(0.0, 1.0), borderRadius: 4),
                 const SizedBox(height: 2),
                 Text(
-                  '${rf.bitmap.receivedCount}/${rf.plan.totalChunks} chunks',
+                  '${received.asReadableFileSize} / ${m.size.asReadableFileSize}',
                   style: const TextStyle(color: Colors.grey, fontSize: 12),
                 ),
-                if (rf.errorMessage != null) Text(rf.errorMessage!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                if (unit.errorMessage != null) Text(unit.errorMessage!, style: const TextStyle(color: Colors.red, fontSize: 12)),
               ],
             ),
           );
-        }),
+        })),
         const SizedBox(height: 16),
         Text('Chunks by source', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 6),

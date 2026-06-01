@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:collection/collection.dart';
 import 'package:common/api_route_builder.dart';
 import 'package:common/model/device.dart';
+import 'package:common/model/dto/file_dto.dart';
 import 'package:common/model/dto/info_register_dto.dart';
 import 'package:common/model/dto/swarm/announce_dto.dart';
 import 'package:common/model/dto/swarm/bitmap_dto.dart';
@@ -90,25 +91,44 @@ class SwarmController {
     final senderAlias = server.ref.read(favoritesProvider).firstWhereOrNull((e) => e.fingerprint == dto.info.fingerprint)?.alias ?? dto.info.alias;
 
     final streamController = StreamController<Map<String, String>?>();
-    // Provisional receiving-file records (no RAF yet — opened after acceptance).
-    final provisionalFiles = <String, SwarmReceivingFile>{
-      for (final file in dto.files.values)
-        file.id: SwarmReceivingFile(
-          file: file,
-          plan: dto.plans[file.id]!,
-          token: _uuid.v4(),
-          desiredName: file.fileName,
-          path: null,
-          bitmap: BitmapDto.empty(
-            sessionId: dto.sessionId,
-            fileId: file.id,
-            totalChunks: dto.plans[file.id]!.totalChunks,
-          ),
-          chunksFromSource: <String, int>{},
-          raf: null,
-          errorMessage: null,
+    // Provisional receiving units (no RAF yet — opened lazily after acceptance).
+    // One unit per plan key: either a standalone file or a bundle of small files.
+    final provisionalFiles = <String, SwarmReceivingFile>{};
+    for (final unitId in dto.plans.keys) {
+      final plan = dto.plans[unitId]!;
+      final manifest = dto.bundles[unitId];
+      final List<SwarmMember> members;
+      if (manifest != null) {
+        members = [
+          for (final e in manifest.entries)
+            if (dto.files[e.fileId] != null)
+              SwarmMember(
+                fileId: e.fileId,
+                fileName: dto.files[e.fileId]!.fileName,
+                fileType: dto.files[e.fileId]!.fileType,
+                size: e.size,
+                offset: e.offset,
+              ),
+        ];
+      } else {
+        final f = dto.files[unitId];
+        if (f == null) continue;
+        members = [SwarmMember(fileId: f.id, fileName: f.fileName, fileType: f.fileType, size: f.size, offset: 0)];
+      }
+      provisionalFiles[unitId] = SwarmReceivingFile(
+        unitId: unitId,
+        plan: plan,
+        token: _uuid.v4(),
+        members: members,
+        bitmap: BitmapDto.empty(
+          sessionId: dto.sessionId,
+          fileId: unitId,
+          totalChunks: plan.totalChunks,
         ),
-    };
+        chunksFromSource: <String, int>{},
+        errorMessage: null,
+      );
+    }
 
     notifier.setSession(
       SwarmReceiveState(
@@ -161,25 +181,35 @@ class SwarmController {
       return;
     }
 
-    // Reserve destination paths (write handles are opened lazily per file on
-    // their first chunk; see RafPool / _openWriteRaf).
+    // Reserve a destination path per original member file (write handles open
+    // lazily on the first chunk). `selection` maps original fileId → desired name.
     final updatedFiles = <String, SwarmReceivingFile>{};
     final tokens = <String, String>{};
-    for (final entry in selection.entries) {
-      final fileId = entry.key;
-      final desiredName = entry.value;
-      final existing = provisionalFiles[fileId];
-      if (existing == null) continue;
-      try {
-        final path = await reserveDestinationPath(
-          destinationDirectory: destinationDir,
-          fileName: desiredName,
-          createdDirectories: notifier.state!.createdDirectories,
-        );
-        updatedFiles[fileId] = existing.copyWith(path: path);
-        tokens[fileId] = existing.token;
-      } catch (e, st) {
-        _logger.severe('Failed to reserve destination for $desiredName', e, st);
+    for (final unit in provisionalFiles.values) {
+      final newMembers = <SwarmMember>[];
+      var anyReserved = false;
+      for (final m in unit.members) {
+        final desiredName = selection[m.fileId];
+        if (desiredName == null) {
+          newMembers.add(m); // not selected (all-or-nothing today, so unusual)
+          continue;
+        }
+        try {
+          final path = await reserveDestinationPath(
+            destinationDirectory: destinationDir,
+            fileName: desiredName,
+            createdDirectories: notifier.state!.createdDirectories,
+          );
+          newMembers.add(m.withPath(path));
+          anyReserved = true;
+        } catch (e, st) {
+          _logger.severe('Failed to reserve destination for $desiredName', e, st);
+          newMembers.add(m);
+        }
+      }
+      if (anyReserved) {
+        updatedFiles[unit.unitId] = unit.copyWith(members: newMembers);
+        tokens[unit.unitId] = unit.token;
       }
     }
     notifier.mutate(
@@ -219,12 +249,28 @@ class SwarmController {
         status: s?.status,
         sender: s?.sender ?? Device.empty,
         showSenderInfo: true,
-        files: s?.files.values.map((f) => f.file).toList() ?? const [],
+        // Show the original files (members), expanding bundles back into them.
+        files: s?.files.values
+                .expand((u) => u.members)
+                .map((m) => FileDto(
+                      id: m.fileId,
+                      fileName: m.fileName,
+                      size: m.size,
+                      fileType: m.fileType,
+                      hash: null,
+                      preview: null,
+                      metadata: null,
+                    ))
+                .toList() ??
+            const [],
         message: null,
         onAccept: () async {
           final session = ref.read(swarmReceiveProvider);
           if (session == null) return;
-          final selection = {for (final f in session.files.values) f.file.id: f.file.fileName};
+          final selection = {
+            for (final u in session.files.values)
+              for (final m in u.members) m.fileId: m.fileName,
+          };
           ref.notifier(swarmReceiveProvider).acceptOrDecline(selection);
           // ignore: use_build_context_synchronously, unawaited_futures
           await Routerino.context.pushAndRemoveUntilImmediately(

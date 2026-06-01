@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:common/api_route_builder.dart';
 import 'package:common/constants.dart';
@@ -10,6 +11,7 @@ import 'package:common/model/dto/info_register_dto.dart';
 import 'package:common/model/dto/multicast_dto.dart';
 import 'package:common/model/dto/swarm/announce_dto.dart';
 import 'package:common/model/dto/swarm/bitmap_dto.dart';
+import 'package:common/model/dto/swarm/bundle_manifest_dto.dart';
 import 'package:common/model/dto/swarm/chunk_plan_dto.dart';
 import 'package:common/model/dto/swarm/peer_info.dart';
 import 'package:common/model/dto/swarm/prepare_swarm_request_dto.dart';
@@ -191,9 +193,10 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     final settings = ref.read(settingsProvider);
     final chunkSize = settings.swarmChunkSize;
 
-    // Build FileDto map. Files without on-disk path (web bytes) are unsupported in v1.
+    // Build FileDto map (all original files). Files without on-disk path
+    // (web bytes) are unsupported in swarm mode.
     final fileDtos = <String, FileDto>{};
-    final filePaths = <String, String>{};
+    final filePathById = <String, String>{};
     for (final f in files) {
       final id = _uuid.v4();
       if (f.path == null) {
@@ -209,7 +212,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
         preview: f.fileType == FileType.text && f.bytes != null ? utf8.decode(f.bytes!) : null,
         metadata: f.lastModified != null || f.lastAccessed != null ? FileMetadata(lastModified: f.lastModified, lastAccessed: f.lastAccessed) : null,
       );
-      filePaths[id] = f.path!;
+      filePathById[id] = f.path!;
     }
     if (fileDtos.isEmpty) {
       _logger.warning('Swarm session aborted: no eligible files');
@@ -224,7 +227,8 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       files: fileDtos,
       plans: const {},
       tokens: const {},
-      sentToPrimary: {for (final id in fileDtos.keys) id: <int>{}},
+      // Keyed lazily by unit id (bundleId / standalone fileId) during dispatch.
+      sentToPrimary: <String, Set<int>>{},
       startTime: nowMs,
       endTime: null,
       errorMessage: null,
@@ -237,25 +241,84 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     );
     state = {...state, sessionId: initialState};
 
-    // Phase A: pre-hash all files
+    // Phase A: partition into standalone large files + bundles of small files,
+    // then pre-hash. `plans`, `bundles` and `unitLayout` are all keyed by unit id
+    // (a bundleId, or a standalone fileId).
     final plans = <String, ChunkPlanDto>{};
+    final bundles = <String, BundleManifestDto>{};
+    final unitLayout = <String, List<_Segment>>{}; // unitId → ordered member segments
     final totalBytes = fileDtos.values.fold<int>(0, (a, f) => a + f.size);
-    var hashedBytes = 0;
+    var hashedBytes = 0; // bytes of fully-hashed units so far
+
+    void reportProgress(double partialBytes) {
+      final overall = totalBytes == 0 ? 1.0 : (hashedBytes + partialBytes) / totalBytes;
+      state = _patch(sessionId, (s) => s.copyWith(prepareProgress: overall.clamp(0.0, 1.0)));
+    }
+
+    // Partition by size: small files (< chunk) get bundled.
+    final smallIds = <String>[];
+    final largeIds = <String>[];
+    for (final entry in fileDtos.entries) {
+      (entry.value.size < chunkSize ? smallIds : largeIds).add(entry.key);
+    }
+    // Bin-pack small files into capacity-capped bundles.
+    final bundleGroups = <List<String>>[];
+    {
+      var cur = <String>[];
+      var curBytes = 0;
+      for (final id in smallIds) {
+        final sz = fileDtos[id]!.size;
+        if (cur.isNotEmpty && (curBytes + sz > bundleMaxBytes || cur.length >= bundleMaxEntries)) {
+          bundleGroups.add(cur);
+          cur = <String>[];
+          curBytes = 0;
+        }
+        cur.add(id);
+        curBytes += sz;
+      }
+      if (cur.isNotEmpty) bundleGroups.add(cur);
+    }
+
     try {
-      for (final entry in fileDtos.entries) {
-        final fid = entry.key;
+      // Standalone large files: one plan + single-segment layout each.
+      for (final id in largeIds) {
+        final sz = fileDtos[id]!.size;
         final plan = await planChunks(
-          fileId: fid,
-          filePath: filePaths[fid]!,
+          fileId: id,
+          filePath: filePathById[id]!,
           chunkSize: chunkSize,
-          onProgress: (p) {
-            final overall = totalBytes == 0 ? 1.0 : (hashedBytes + p * entry.value.size) / totalBytes;
-            state = _patch(sessionId, (s) => s.copyWith(prepareProgress: overall));
-          },
+          onProgress: (p) => reportProgress(p * sz),
         );
-        plans[fid] = plan;
-        hashedBytes += entry.value.size;
-        _logger.info('Hashed ${entry.value.fileName}: ${plan.totalChunks} chunks');
+        plans[id] = plan;
+        unitLayout[id] = [_Segment(path: filePathById[id]!, unitOffset: 0, size: sz)];
+        hashedBytes += sz;
+      }
+      // Bundles: concatenated plan + manifest + multi-segment layout.
+      for (final group in bundleGroups) {
+        final bundleId = _uuid.v4();
+        var offset = 0;
+        final entries = <BundleEntryDto>[];
+        final members = <BundleMemberSource>[];
+        final segments = <_Segment>[];
+        for (final id in group) {
+          final sz = fileDtos[id]!.size;
+          entries.add(BundleEntryDto(fileId: id, size: sz, offset: offset));
+          members.add((fileId: id, path: filePathById[id]!, size: sz));
+          segments.add(_Segment(path: filePathById[id]!, unitOffset: offset, size: sz));
+          offset += sz;
+        }
+        final bundleBytes = offset;
+        final plan = await planBundleChunks(
+          bundleId: bundleId,
+          members: members,
+          chunkSize: chunkSize,
+          onProgress: (p) => reportProgress(p * bundleBytes),
+        );
+        plans[bundleId] = plan;
+        bundles[bundleId] = BundleManifestDto(bundleId: bundleId, entries: entries);
+        unitLayout[bundleId] = segments;
+        hashedBytes += bundleBytes;
+        _logger.info('Bundled ${group.length} small files into $bundleId: ${plan.totalChunks} chunks');
       }
     } catch (e, st) {
       _logger.severe('Pre-hashing failed', e, st);
@@ -268,6 +331,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       );
       return sessionId;
     }
+    _logger.info('Prepared ${plans.length} units (${largeIds.length} standalone, ${bundleGroups.length} bundles) from ${fileDtos.length} files');
     state = _patch(
       sessionId,
       (s) => s.copyWith(
@@ -334,6 +398,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
                 peers: peers,
                 myIndex: idx,
                 relayPlan: relayPlan,
+                bundles: bundles,
               ),
             )
             .then((tokensForTarget) {
@@ -382,9 +447,9 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       sessionId: sessionId,
       http: http,
       acceptedTargets: acceptedTargets,
-      filePaths: filePaths,
+      unitLayout: unitLayout,
       stop: stop,
-      relayPlanMap: relayPlanMap, 
+      relayPlanMap: relayPlanMap,
     );
 
     final endMs = DateTime.now().millisecondsSinceEpoch;
@@ -456,7 +521,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     required String sessionId,
     required SwarmHttpClient http,
     required List<Device> acceptedTargets,
-    required Map<String, String> filePaths,
+    required Map<String, List<_Segment>> unitLayout,
     required Completer<void> stop,
     required Map<String, RelayPlanDto> relayPlanMap,
   }) async {
@@ -492,13 +557,13 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       for (var w = 0; w < _perTargetConcurrency; w++) {
         futures.add(
           _uploadWorker(
-            sessionId: sessionId, 
-            http: http, 
-            target: target, 
-            scheduler: scheduler, 
-            filePaths: filePaths, 
-            lastAttempt: lastAttempt, 
-          ), 
+            sessionId: sessionId,
+            http: http,
+            target: target,
+            scheduler: scheduler,
+            unitLayout: unitLayout,
+            lastAttempt: lastAttempt,
+          ),
         );
       }
     }
@@ -539,7 +604,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
       sessionId: sessionId,
       http: http,
       acceptedTargets: acceptedTargets,
-      filePaths: filePaths,
+      unitLayout: unitLayout,
       lastAttempt: lastAttempt,
       stop: stop,
     );
@@ -560,27 +625,24 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     required String sessionId,
     required SwarmHttpClient http,
     required Device target,
-    required _AdaptiveChunkScheduler scheduler, 
-    required Map<String, String> filePaths,
+    required _AdaptiveChunkScheduler scheduler,
+    required Map<String, List<_Segment>> unitLayout,
     required Map<String, Map<int, DateTime>> lastAttempt,
   }) async {
     while (true) {
       final next = scheduler.nextChunk(target.fingerprint);
       if (next == null) break; // no more work
 
-      // if (queue.isEmpty) break;
-      // final next = queue.removeAt(0);
-
       final stopwatch = Stopwatch()..start();
       int transmittedBytes = 0;
-      
+
       try {
         transmittedBytes = await _uploadChunk(
           sessionId: sessionId,
           http: http,
           target: target,
           chunkRef: next,
-          filePath: filePaths[next.fileId]!,
+          layout: unitLayout[next.fileId]!,
           lastAttempt: lastAttempt,
         );
         stopwatch.stop();
@@ -606,7 +668,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     required SwarmHttpClient http,
     required Device target,
     required _ChunkRef chunkRef,
-    required String filePath,
+    required List<_Segment> layout,
     required Map<String, Map<int, DateTime>> lastAttempt,
   }) async {
     final ss = state[sessionId];
@@ -616,10 +678,11 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     final token = ss.tokens[target.fingerprint]?[chunkRef.fileId];
     if (token == null) return 0;
 
-    // Read slice from disk via the pooled read handle (no per-chunk open/close).
+    // Read the chunk slice from disk. For a bundle this may span several member
+    // files; the pool keeps per-path descriptors open (no per-chunk open/close).
     final length = plan.chunkLength(chunkRef.chunkIndex);
     final pool = _readPools[sessionId] ??= RafReadPool();
-    final bytes = await pool.read(filePath, plan.chunkOffset(chunkRef.chunkIndex), length);
+    final bytes = await _readUnitSlice(pool, layout, plan.chunkOffset(chunkRef.chunkIndex), length);
     if (bytes.length != length) {
       throw StateError('Short read at chunk ${chunkRef.chunkIndex}');
     }
@@ -653,7 +716,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     required String sessionId,
     required SwarmHttpClient http,
     required List<Device> acceptedTargets,
-    required Map<String, String> filePaths,
+    required Map<String, List<_Segment>> unitLayout,
     required Map<String, Map<int, DateTime>> lastAttempt,
     required Completer<void> stop,
   }) async {
@@ -663,7 +726,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
           sessionId: sessionId,
           http: http,
           acceptedTargets: acceptedTargets,
-          filePaths: filePaths,
+          unitLayout: unitLayout,
           lastAttempt: lastAttempt,
         );
       } catch (e, st) {
@@ -736,7 +799,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     required String sessionId,
     required SwarmHttpClient http,
     required List<Device> acceptedTargets,
-    required Map<String, String> filePaths,
+    required Map<String, List<_Segment>> unitLayout,
     required Map<String, Map<int, DateTime>> lastAttempt,
   }) async {
     final ss = state[sessionId];
@@ -744,7 +807,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
     final byPeer = _peerBitmaps[sessionId] ?? const {};
 
     for (final plan in ss.plans.values) {
-      final fileId = plan.fileId;
+      final fileId = plan.fileId; // unit id
       for (var k = 0; k < plan.totalChunks; k++) {
         // 1) Already uploaded by sender directly?
         final sentSet = ss.sentToPrimary[fileId] ?? const <int>{};
@@ -785,7 +848,7 @@ class SwarmSendNotifier extends Notifier<Map<String, SwarmSendState>> {
           http: http,
           target: laggard,
           chunkRef: _ChunkRef(fileId: fileId, chunkIndex: k),
-          filePath: filePaths[fileId]!,
+          layout: unitLayout[fileId]!,
           lastAttempt: lastAttempt,
         );
       }
@@ -816,4 +879,38 @@ class _ChunkRef {
   final String fileId;
   final int chunkIndex;
   const _ChunkRef({required this.fileId, required this.chunkIndex});
+}
+
+/// One member file's placement within a unit's virtual byte space. A standalone
+/// file is a single segment at offset 0; a bundle is its members in order.
+class _Segment {
+  final String path;
+  final int unitOffset; // start offset of this segment within the unit
+  final int size;
+  const _Segment({required this.path, required this.unitOffset, required this.size});
+}
+
+/// Reads `[off, off+len)` of a unit's virtual byte space, stitching together the
+/// member-file slices it overlaps. For a standalone file this is a single read.
+Future<Uint8List> _readUnitSlice(
+  RafReadPool pool,
+  List<_Segment> segments,
+  int off,
+  int len,
+) async {
+  if (segments.length == 1 && segments[0].unitOffset == 0) {
+    return pool.read(segments[0].path, off, len); // fast path: standalone file
+  }
+  final end = off + len;
+  final out = Uint8List(len);
+  for (final seg in segments) {
+    final segStart = seg.unitOffset;
+    final segEnd = seg.unitOffset + seg.size;
+    final overlapStart = off > segStart ? off : segStart;
+    final overlapEnd = end < segEnd ? end : segEnd;
+    if (overlapStart >= overlapEnd) continue;
+    final part = await pool.read(seg.path, overlapStart - segStart, overlapEnd - overlapStart);
+    out.setRange(overlapStart - off, overlapEnd - off, part);
+  }
+  return out;
 }

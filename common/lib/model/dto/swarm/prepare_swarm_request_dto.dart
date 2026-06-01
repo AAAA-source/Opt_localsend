@@ -1,5 +1,6 @@
 import 'package:common/model/dto/file_dto.dart';
 import 'package:common/model/dto/info_register_dto.dart';
+import 'package:common/model/dto/swarm/bundle_manifest_dto.dart';
 import 'package:common/model/dto/swarm/chunk_plan_dto.dart';
 import 'package:common/model/dto/swarm/peer_info.dart';
 import 'package:common/model/dto/swarm/relay_plan_dto.dart';
@@ -11,11 +12,14 @@ import 'package:common/model/dto/swarm/relay_plan_dto.dart';
 class PrepareSwarmRequestDto {
   final InfoRegisterDto info;
   final String sessionId; // sender-chosen, shared by all peers
-  final Map<String, FileDto> files;
-  final Map<String, ChunkPlanDto> plans; // fileId → plan
+  final Map<String, FileDto> files; // ALL original files (for the accept UI)
+  final Map<String, ChunkPlanDto> plans; // unitId → plan (bundleId or standalone fileId)
   final List<PeerInfo> peers; // all M receivers, deterministic order
   final int myIndex; // index of THIS receiver in [peers]
   final RelayPlanDto? relayPlan; // optional per-peer topology assignment
+  // bundleId → manifest. Bundled small files share one unit/plan; their unitId
+  // is the bundleId. Empty ⇒ every file is a standalone unit (legacy behavior).
+  final Map<String, BundleManifestDto> bundles;
 
   const PrepareSwarmRequestDto({
     required this.info,
@@ -25,6 +29,7 @@ class PrepareSwarmRequestDto {
     required this.peers,
     required this.myIndex,
     this.relayPlan,
+    this.bundles = const {},
   });
 
   Map<String, dynamic> toJson() => {
@@ -40,6 +45,9 @@ class PrepareSwarmRequestDto {
     'peers': peers.map((p) => p.toJson()).toList(),
     'myIndex': myIndex,
     'relayPlan': relayPlan?.toJson(),
+    'bundles': {
+      for (final entry in bundles.entries) entry.key: entry.value.toJson(),
+    },
   };
 
   static PrepareSwarmRequestDto fromJson(Map<String, dynamic> map) =>
@@ -63,5 +71,11 @@ class PrepareSwarmRequestDto {
         relayPlan: map['relayPlan'] != null
             ? RelayPlanDto.fromJson(map['relayPlan'] as Map<String, dynamic>)
             : null,
+        bundles: map['bundles'] == null
+            ? const {}
+            : {
+                for (final entry in (map['bundles'] as Map<String, dynamic>).entries)
+                  entry.key: BundleManifestDto.fromJson(entry.value as Map<String, dynamic>),
+              },
       );
 }

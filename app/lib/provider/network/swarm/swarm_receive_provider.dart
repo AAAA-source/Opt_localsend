@@ -61,9 +61,8 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
   // opened lazily on its first chunk and closed the moment it is complete; the
   // FileMode.write handle (O_RDWR) also serves relay reads while open. Once a
   // file is closed, relay reads of it go through a bounded read pool.
-  final Map<String, RandomAccessFile> _writeRafs = {}; // fileId -> open write handle
-  final Map<String, int> _recvCount = {}; // fileId -> unique chunks written
-  final Map<String, Future<void>> _fileLocks = {}; // fileId -> serialization lock
+  final Map<String, RandomAccessFile> _writeRafs = {}; // member fileId -> open write handle
+  final Map<String, Future<void>> _fileLocks = {}; // unit id -> serialization lock
   final RafReadPool _relayReadPool = RafReadPool();
 
   @override
@@ -101,7 +100,6 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     _dirtyBitmaps.clear();
     _pushedToChildren.clear();
     _writeRafs.clear();
-    _recvCount.clear();
     _fileLocks.clear();
     _firstChunkReceivedAt = null;
     _lastChunkReceivedAt = null;
@@ -157,8 +155,9 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     state = s.copyWith(peerBitmaps: byPeer);
   }
 
-  /// Persists a chunk to disk and updates bitmap.
-  /// Returns true on success, false on hash mismatch or write error.
+  /// Persists a chunk to disk and updates the unit bitmap. For a bundle the
+  /// chunk is scattered across the member files it overlaps. [fileId] is the
+  /// unit id. Returns true on success, false on hash mismatch or write error.
   Future<bool> writeChunk({
     required String fileId,
     required int chunkIndex,
@@ -173,36 +172,51 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     final expectedHash = rf.plan.sha256PerChunk[chunkIndex];
     final actual = sha256.convert(bytes).toString();
     if (actual != expectedHash) {
-      _logger.warning('Hash mismatch ${rf.file.fileName}#$chunkIndex from $source');
+      _logger.warning('Hash mismatch ${rf.displayName}#$chunkIndex from $source');
       return false;
     }
+    final cs = rf.plan.chunkSize;
+    final chunkStart = chunkIndex * cs;
+    final chunkEnd = chunkStart + bytes.length;
+
     final ok = await _withFileLock(fileId, () async {
       // Re-check under the lock: a concurrent writer may have just landed it.
       if (rf.bitmap.has(chunkIndex)) return true;
-      final RandomAccessFile raf;
-      try {
-        raf = await _openWriteRaf(rf);
-      } catch (e, st) {
-        _logger.severe('Open write handle failed for ${rf.file.fileName}', e, st);
-        return false;
+      // Scatter the chunk into every member file whose byte range it overlaps.
+      for (final m in rf.members) {
+        if (m.size == 0) continue;
+        final mStart = m.offset;
+        final mEnd = m.offset + m.size;
+        final oStart = chunkStart > mStart ? chunkStart : mStart;
+        final oEnd = chunkEnd < mEnd ? chunkEnd : mEnd;
+        if (oStart >= oEnd) continue;
+        final RandomAccessFile raf;
+        try {
+          raf = await _openMemberWriteRaf(m);
+        } catch (e, st) {
+          _logger.severe('Open write handle failed for ${m.fileName}', e, st);
+          return false;
+        }
+        try {
+          await raf.setPosition(oStart - mStart); // in-file offset
+          await raf.writeFrom(bytes, oStart - chunkStart, oEnd - chunkStart);
+        } catch (e, st) {
+          _logger.severe('Write failed at ${m.fileName} (unit $fileId#$chunkIndex)', e, st);
+          return false;
+        }
       }
-      try {
-        await raf.setPosition(rf.plan.chunkOffset(chunkIndex));
-        await raf.writeFrom(bytes);
-      } catch (e, st) {
-        _logger.severe('Write failed at $fileId#$chunkIndex', e, st);
-        return false;
-      }
-      // Update bitmap in-place
-      final byte = chunkIndex >> 3;
-      rf.bitmap.bits[byte] |= (1 << (chunkIndex & 7));
+      // Update unit bitmap in-place (must precede the completion check below).
+      rf.bitmap.bits[chunkIndex >> 3] |= (1 << (chunkIndex & 7));
       rf.chunksFromSource[source] = (rf.chunksFromSource[source] ?? 0) + 1;
       (_chunkSource[fileId] ??= {})[chunkIndex] = source;
-      // Close the write handle the moment the file is complete, so the open-fd
-      // count tracks the in-progress working set, not the total file count.
-      final count = (_recvCount[fileId] = (_recvCount[fileId] ?? 0) + 1);
-      if (count >= rf.plan.totalChunks) {
-        final w = _writeRafs.remove(fileId);
+      // Close the write handle of any member this chunk just completed, so the
+      // open-fd count tracks the in-flight working set, not the total file count.
+      for (final m in rf.members) {
+        if (m.size == 0) continue;
+        if (chunkEnd <= m.offset || chunkStart >= m.offset + m.size) continue; // not overlapped
+        if (!_writeRafs.containsKey(m.fileId)) continue;
+        if (!_memberComplete(rf, m)) continue;
+        final w = _writeRafs.remove(m.fileId);
         try {
           await w?.flush();
           await w?.close();
@@ -220,46 +234,75 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     return true;
   }
 
-  /// Lazily opens (and preallocates) the write handle for [rf], reusing it for
-  /// the life of the incomplete file. FileMode.write is O_RDWR, so the same
-  /// handle also serves relay reads while the file is being written.
-  Future<RandomAccessFile> _openWriteRaf(SwarmReceivingFile rf) async {
-    final existing = _writeRafs[rf.file.id];
+  /// True when every chunk overlapping [m]'s byte range is present in the unit
+  /// bitmap (i.e. the member file is fully written).
+  bool _memberComplete(SwarmReceivingFile rf, SwarmMember m) {
+    if (m.size == 0) return true;
+    final cs = rf.plan.chunkSize;
+    final first = m.offset ~/ cs;
+    final last = (m.offset + m.size - 1) ~/ cs;
+    for (var c = first; c <= last; c++) {
+      if (!rf.bitmap.has(c)) return false;
+    }
+    return true;
+  }
+
+  /// Lazily opens (and preallocates) a member file's write handle, reusing it
+  /// until the member is complete. FileMode.write is O_RDWR, so the same handle
+  /// also serves relay reads while the member is being written.
+  Future<RandomAccessFile> _openMemberWriteRaf(SwarmMember m) async {
+    final existing = _writeRafs[m.fileId];
     if (existing != null) return existing;
-    final path = rf.path;
+    final path = m.path;
     if (path == null) {
-      throw StateError('No destination path for ${rf.file.fileName}');
+      throw StateError('No destination path for ${m.fileName}');
     }
     final raf = await File(path).open(mode: FileMode.write);
-    if (rf.file.size > 0) {
-      await raf.truncate(rf.file.size);
+    if (m.size > 0) {
+      await raf.truncate(m.size);
     }
-    _writeRafs[rf.file.id] = raf;
+    _writeRafs[m.fileId] = raf;
     return raf;
   }
 
-  /// Returns the bytes of a chunk we already hold (peer→peer GET).
+  /// Returns the bytes of a chunk we already hold (peer→peer GET). For a bundle
+  /// this gathers the slice from each overlapping member file. [fileId] is the
+  /// unit id.
   Future<Uint8List?> readChunk({required String fileId, required int chunkIndex}) async {
     final s = state;
     if (s == null) return null;
     final rf = s.files[fileId];
     if (rf == null) return null;
     if (!rf.bitmap.has(chunkIndex)) return null;
-    final path = rf.path;
-    if (path == null) return null;
-    final offset = rf.plan.chunkOffset(chunkIndex);
+    final cs = rf.plan.chunkSize;
+    final chunkStart = chunkIndex * cs;
     final n = rf.plan.chunkLength(chunkIndex);
+    final chunkEnd = chunkStart + n;
     return _withFileLock(fileId, () async {
-      final w = _writeRafs[fileId];
-      if (w != null) {
-        // File still being written; read from the same O_RDWR handle.
-        await w.setPosition(offset);
-        final out = await w.read(n);
-        return out.length == n ? out : null;
+      final out = Uint8List(n);
+      for (final m in rf.members) {
+        if (m.size == 0) continue;
+        final mStart = m.offset;
+        final mEnd = m.offset + m.size;
+        final oStart = chunkStart > mStart ? chunkStart : mStart;
+        final oEnd = chunkEnd < mEnd ? chunkEnd : mEnd;
+        if (oStart >= oEnd) continue;
+        final path = m.path;
+        if (path == null) return null;
+        final Uint8List part;
+        final w = _writeRafs[m.fileId];
+        if (w != null) {
+          // Member still being written; read from the same O_RDWR handle.
+          await w.setPosition(oStart - mStart);
+          part = await w.read(oEnd - oStart);
+        } else {
+          // Member complete and closed; read through the bounded read pool.
+          part = await _relayReadPool.read(path, oStart - mStart, oEnd - oStart);
+        }
+        if (part.length != oEnd - oStart) return null;
+        out.setRange(oStart - chunkStart, oEnd - chunkStart, part);
       }
-      // File complete and closed; read through the bounded read pool.
-      final out = await _relayReadPool.read(path, offset, n);
-      return out.length == n ? out : null;
+      return out;
     });
   }
 
@@ -313,7 +356,7 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
         if (myPlan != null && myPlan.parentFingerprint != null) {
           final parentPeer = s.peers.firstWhereOrNull((p) => p.fingerprint == myPlan.parentFingerprint);
           if (parentPeer != null) {
-            final parentBitmap = s.peerBitmaps[parentPeer.fingerprint]?[rf.file.id];
+            final parentBitmap = s.peerBitmaps[parentPeer.fingerprint]?[rf.unitId];
             if (parentBitmap != null && parentBitmap.has(k)) {
               source = parentPeer;
             }
@@ -326,7 +369,7 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
             if (peer.fingerprint == _myFingerprint()) continue;
             if (myPlan != null && peer.fingerprint == myPlan.parentFingerprint) continue; // already checked parent
 
-            final bm = s.peerBitmaps[peer.fingerprint]?[rf.file.id];
+            final bm = s.peerBitmaps[peer.fingerprint]?[rf.unitId];
             if (bm != null && bm.has(k)) {
               source = peer;
               break;
@@ -338,7 +381,7 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
         // PeerInfo? source;
         // for (final peer in s.peers) {
         //   if (peer.fingerprint == _myFingerprint()) continue;
-        //   final bm = s.peerBitmaps[peer.fingerprint]?[rf.file.id];
+        //   final bm = s.peerBitmaps[peer.fingerprint]?[rf.unitId];
         //   if (bm != null && bm.has(k)) {
         //     source = peer;
         //     break;
@@ -351,23 +394,23 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
             url: url,
             query: {
               'sessionId': s.sessionId,
-              'fileId': rf.file.id,
+              'fileId': rf.unitId,
               'chunkIndex': '$k',
               'token': rf.token,
             },
           );
           final ok = await writeChunk(
-            fileId: rf.file.id,
+            fileId: rf.unitId,
             chunkIndex: k,
             bytes: bytes,
             source: source.fingerprint,
           );
           if (ok) {
-            markBitmapDirty(rf.file.id);
+            markBitmapDirty(rf.unitId);
           }
         } catch (e) {
-          // _logger.fine('peer pull failed ${rf.file.id}#$k from ${source.alias}: $e');
-          _logger.fine('peer pull failed ${rf.file.id}#$k from ${source.fingerprint}: $e');
+          // _logger.fine('peer pull failed ${rf.unitId}#$k from ${source.alias}: $e');
+          _logger.fine('peer pull failed ${rf.unitId}#$k from ${source.fingerprint}: $e');
           // mark the peer bitmap as "doesn't have it" so we don't loop hot
           final s2 = state;
           if (s2 != null) {
@@ -395,7 +438,7 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
     final s = state;
     if (s == null) return;
     for (final rf in s.files.values) {
-      _dirtyBitmaps.add(rf.file.id);
+      _dirtyBitmaps.add(rf.unitId);
     }
     await _flushBitmapBroadcasts();
   }
@@ -577,7 +620,6 @@ class SwarmReceiveNotifier extends Notifier<SwarmReceiveState?> {
       } catch (_) {}
     }
     await _relayReadPool.closeAll();
-    _recvCount.clear();
     _fileLocks.clear();
     _client?.dispose();
     _client = null;
